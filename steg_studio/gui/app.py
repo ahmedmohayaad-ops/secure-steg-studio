@@ -1,18 +1,34 @@
 # steg_studio/gui/app.py
-"""
-Main application window — with history sidebar panel.
+"""Steg Studio v2.1 — Forensic Steganography Workstation shell.
+
+Layout:
+  ┌──────────────────────────────────────────────────────────────┐
+  │  TitleBar    · traffic lights + brand + session + version    │
+  ├──────────────────────────────────────────────────────────────┤
+  │  TopBar      · eyebrow + title + segmented + actions         │
+  ├──┬───────────────────────────────────────────────────────────┤
+  │R │  Workspace                                                │
+  │a │  (encrypt | decrypt — each has 1fr workspace + inspector) │
+  │i ├───────────────────────────────────────────────────────────┤
+  │l │  Event log drawer (collapsible)                           │
+  ├──┴───────────────────────────────────────────────────────────┤
+  │  StatusBar   · READY · KDF · Cipher · LSB · mem · cpu · ver  │
+  └──────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
 
 import customtkinter as ctk
 
-from steg_studio.gui.widgets     import StatusBar, HistoryPanel, ACCENT, ACCENT_DIM, BORDER
-from steg_studio.gui.encrypt_tab import EncryptTab
-from steg_studio.gui.decrypt_tab import DecryptTab
+from . import theme
+from .assets import icon
+from .components import V2Badge, V2Segmented, ConsoleLog, session_id
+from .encrypt_panel import EncryptPanel
+from .decrypt_panel import DecryptPanel
 
-APP_NAME = "Secure Steganography Studio"
-GEOMETRY = "1100x680"
-MIN_SIZE = (920, 600)
+
+APP_NAME = "Steg Studio — Forensic Steganography Workstation"
+GEOMETRY = "1480x900"
+MIN_SIZE = (1240, 760)
 
 
 class App(ctk.CTk):
@@ -22,174 +38,308 @@ class App(ctk.CTk):
         self.geometry(GEOMETRY)
         self.minsize(*MIN_SIZE)
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self._build_ui()
+        self.configure(fg_color=theme.BG_1)
 
-    def _build_ui(self):
-        # ── Top bar ───────────────────────────────────────────────────────────
-        top = ctk.CTkFrame(self, height=58, fg_color=("gray88", "#13161C"), corner_radius=0)
-        top.pack(fill="x")
-        top.pack_propagate(False)
+        self._mode = "encrypt"
+        self._console_open = True
+        self._build()
 
-        ctk.CTkFrame(top, width=4, fg_color=ACCENT, corner_radius=0).pack(side="left", fill="y")
+    # ── shell ────────────────────────────────────────────────────────────────
+    def _build(self):
+        self._build_titlebar()
+        self._build_topbar()
 
-        logo = ctk.CTkFrame(top, fg_color="transparent")
-        logo.pack(side="left", padx=16)
-        ctk.CTkLabel(logo, text="🔐", font=("Segoe UI", 22)).pack(side="left", padx=(0, 8))
-        title_stack = ctk.CTkFrame(logo, fg_color="transparent")
-        title_stack.pack(side="left")
-        ctk.CTkLabel(title_stack, text="SECURE STEGANOGRAPHY STUDIO",
-                     font=("Segoe UI", 14, "bold"),
-                     text_color=("gray15", "gray95")).pack(anchor="w")
-        ctk.CTkLabel(title_stack, text="Hide data invisibly inside images",
-                     font=("Segoe UI", 9),
-                     text_color=("gray50", "gray55")).pack(anchor="w")
+        body = ctk.CTkFrame(self, fg_color=theme.BG_1, corner_radius=0)
+        body.pack(fill="both", expand=True)
 
-        ctrl = ctk.CTkFrame(top, fg_color="transparent")
-        ctrl.pack(side="right", padx=16)
+        self._build_rail(body)
 
-        # History toggle button
-        self._hist_var = ctk.BooleanVar(value=True)
-        ctk.CTkButton(
-            ctrl, text="⏱ History", width=90, height=30,
-            font=("Segoe UI", 11),
-            fg_color=("gray78", "#2A2F3A"), hover_color=("gray70", "#343B48"),
-            text_color=("gray20", "gray80"), corner_radius=6,
-            command=self._toggle_history,
-        ).pack(side="right", padx=(6, 0))
+        self._main_col = ctk.CTkFrame(body, fg_color=theme.BG_1, corner_radius=0)
+        self._main_col.pack(side="left", fill="both", expand=True)
 
-        self._theme_btn = ctk.CTkButton(
-            ctrl, text="☀  Light", width=88, height=30, font=("Segoe UI", 11),
-            command=self._toggle_theme,
-            fg_color=("gray78", "#2A2F3A"), hover_color=("gray70", "#343B48"),
-            text_color=("gray20", "gray80"), corner_radius=6,
+        self._workspace = ctk.CTkFrame(self._main_col,
+                                        fg_color=theme.BG_1, corner_radius=0)
+        self._workspace.pack(fill="both", expand=True)
+
+        # Console drawer
+        self._drawer = ctk.CTkFrame(self._main_col, fg_color=theme.BG_2,
+                                     height=200, corner_radius=0,
+                                     border_width=0)
+        self._drawer.pack(fill="x", side="bottom")
+        self._drawer.pack_propagate(False)
+        self._build_drawer()
+
+        self._build_statusbar()
+        self._build_panels()
+
+        # Boot log
+        self._log.add("steg-studio/core v2.1.0 · py · cryptography backend OpenSSL", "info")
+        self._log.add("Cryptography: Fernet (AES-128-CBC + HMAC-SHA256) · PBKDF2-HMAC-SHA256 480K iters", "info")
+        self._log.add(f"Session initialised · session#{session_id()}", "ok")
+
+    def _build_titlebar(self):
+        bar = ctk.CTkFrame(self, fg_color=theme.BG_0, height=40,
+                            corner_radius=0)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+
+        # Traffic lights
+        tl = ctk.CTkFrame(bar, fg_color="transparent")
+        tl.pack(side="left", padx=14)
+        for col in ("#FF5F57", "#FEBC2E", "#28C840"):
+            d = ctk.CTkLabel(tl, text="●", text_color=col,
+                              font=("Segoe UI", 12), width=14)
+            d.pack(side="left", padx=2)
+
+        # Brand center
+        center = ctk.CTkFrame(bar, fg_color="transparent")
+        center.place(relx=0.5, rely=0.5, anchor="center")
+        ctk.CTkLabel(center, text="",
+                      image=icon("lock", 14, theme.AMBER_INK),
+                      width=20, height=20,
+                      fg_color=theme.AMBER, corner_radius=4
+                      ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(center, text="Steg Studio",
+                      font=("Segoe UI", 12, "bold"),
+                      text_color=theme.TEXT_MID
+                      ).pack(side="left")
+        ctk.CTkLabel(center, text="·",
+                      font=("JetBrains Mono", 11),
+                      text_color=theme.TEXT_DIM
+                      ).pack(side="left", padx=8)
+        ctk.CTkLabel(center,
+                      text=f"session {session_id()} · workspace",
+                      font=("JetBrains Mono", 10),
+                      text_color=theme.TEXT_LO
+                      ).pack(side="left")
+
+        ctk.CTkLabel(bar, text="v2.1.0",
+                      font=("JetBrains Mono", 10),
+                      text_color=theme.TEXT_DIM
+                      ).pack(side="right", padx=14)
+
+    def _build_topbar(self):
+        bar = ctk.CTkFrame(self, fg_color=theme.BG_2, height=68,
+                            corner_radius=0)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+
+        # Eyebrow + big title (left)
+        left = ctk.CTkFrame(bar, fg_color="transparent")
+        left.pack(side="left", padx=20, pady=12)
+        self._eyebrow = ctk.CTkLabel(left,
+                                       text="EMBED / ENCRYPT",
+                                       font=("Segoe UI", 9, "bold"),
+                                       text_color=theme.AMBER, anchor="w")
+        self._eyebrow.pack(anchor="w")
+        self._title = ctk.CTkLabel(left,
+                                     text="Hide an authenticated payload inside a lossless image",
+                                     font=("Segoe UI", 16, "bold"),
+                                     text_color=theme.TEXT_HI, anchor="w")
+        self._title.pack(anchor="w")
+
+        # Right cluster: segmented + history + prefs
+        right = ctk.CTkFrame(bar, fg_color="transparent")
+        right.pack(side="right", padx=20, pady=12)
+
+        self._seg = V2Segmented(right, ["Encrypt", "Decrypt"],
+                                  on_change=lambda v: self._switch(v.lower()),
+                                  icons=["lock", "unlock"])
+        self._seg.pack(side="left")
+
+    def _build_rail(self, parent):
+        rail = ctk.CTkFrame(parent, fg_color=theme.BG_2, width=56,
+                             corner_radius=0)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+
+        items = [
+            ("encrypt", "lock"),
+            ("decrypt", "unlock"),
+        ]
+        self._rail_btns: dict[str, ctk.CTkButton] = {}
+        for key, ic in items:
+            b = ctk.CTkButton(rail, text="",
+                               image=icon(ic, 16,
+                                           theme.AMBER if key == self._mode
+                                           else theme.TEXT_LO),
+                               width=40, height=40,
+                               fg_color=("#3C2A0E" if key == self._mode
+                                         else "transparent"),
+                               hover_color=theme.BG_3,
+                               border_width=1 if key == self._mode else 0,
+                               border_color="#6A4818",
+                               corner_radius=6,
+                               command=(lambda k=key:
+                                         self._switch(k) if k in ("encrypt", "decrypt")
+                                         else None))
+            b.pack(pady=4)
+            self._rail_btns[key] = b
+            self._rail_btns[key + "_icon"] = ic  # type: ignore
+
+        # spacer
+        ctk.CTkFrame(rail, fg_color="transparent", height=1).pack(
+            fill="y", expand=True)
+
+        # Console toggle at bottom
+        self._console_btn = ctk.CTkButton(
+            rail, text="",
+            image=icon("terminal", 16, theme.AMBER),
+            width=40, height=40,
+            fg_color="#3C2A0E", hover_color=theme.BG_3,
+            border_width=1, border_color="#6A4818",
+            corner_radius=6,
+            command=self._toggle_console)
+        self._console_btn.pack(pady=8)
+
+    def _build_drawer(self):
+        head = ctk.CTkFrame(self._drawer, fg_color=theme.BG_2,
+                             height=32, corner_radius=0)
+        head.pack(fill="x")
+        head.pack_propagate(False)
+        ctk.CTkLabel(head, text="",
+                      image=icon("terminal", 13, theme.AMBER), width=18
+                      ).pack(side="left", padx=(14, 6))
+        ctk.CTkLabel(head, text="EVENT LOG",
+                      font=("Segoe UI", 10, "bold"),
+                      text_color=theme.TEXT_MID
+                      ).pack(side="left")
+        self._log_count = V2Badge(head, "0 entries", "neutral")
+        self._log_count.pack(side="left", padx=10)
+
+        ctk.CTkButton(head, text="Clear",
+                       fg_color="transparent", hover_color=theme.BG_3,
+                       text_color=theme.TEXT_DIM,
+                       font=("Segoe UI", 10),
+                       width=50, height=22, corner_radius=4,
+                       command=self._clear_log
+                       ).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(head, text="✕",
+                       fg_color="transparent", hover_color=theme.BG_3,
+                       text_color=theme.TEXT_DIM,
+                       font=("Segoe UI", 12),
+                       width=30, height=22, corner_radius=4,
+                       command=self._toggle_console
+                       ).pack(side="right", padx=(0, 8))
+
+        body = ctk.CTkFrame(self._drawer, fg_color=theme.BG_2)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        self._log = ConsoleLog(body)
+        self._log.pack(fill="both", expand=True)
+
+    def _build_statusbar(self):
+        bar = ctk.CTkFrame(self, fg_color=theme.BG_0, height=28,
+                            corner_radius=0)
+        bar.pack(fill="x", side="bottom")
+        bar.pack_propagate(False)
+
+        def chunk(text: str, color: str = theme.TEXT_LO,
+                  bold: bool = False, accent_dot: bool = False):
+            f = ctk.CTkFrame(bar, fg_color="transparent")
+            f.pack(side="left", padx=(0, 8))
+            if accent_dot:
+                ctk.CTkLabel(f, text="●",
+                              text_color=theme.OK,
+                              font=("Segoe UI", 10),
+                              width=12).pack(side="left")
+            ctk.CTkLabel(f, text=text,
+                          font=("JetBrains Mono", 10,
+                                "bold" if bold else "normal"),
+                          text_color=color
+                          ).pack(side="left")
+            return f
+
+        chunk(" READY", theme.TEXT_HI, bold=True, accent_dot=True)
+        sep = lambda: ctk.CTkLabel(bar, text="│", text_color=theme.TEXT_DIM,
+                                    font=("Segoe UI", 11)).pack(side="left",
+                                                                  padx=4)
+        sep()
+        chunk("PBKDF2 · 480,000 iters")
+        sep()
+        chunk("Fernet · AES-128-CBC + HMAC-SHA256")
+        sep()
+        chunk("LSB · 1-bit · G-channel primary")
+
+        right_chunk = lambda text, color=theme.TEXT_LO: ctk.CTkLabel(
+            bar, text=text, font=("JetBrains Mono", 10),
+            text_color=color).pack(side="right", padx=8)
+        right_chunk(f"v2.1.0 · session {session_id()}", theme.AMBER)
+
+    def _build_panels(self):
+        self._encrypt = EncryptPanel(
+            self._workspace,
+            log=self._log_event,
+            on_status=lambda *_: None,
         )
-        self._theme_btn.pack(side="right")
-
-        # ── Tab strip ─────────────────────────────────────────────────────────
-        tab_strip = ctk.CTkFrame(self, height=44, fg_color=("gray90", "#181B22"), corner_radius=0)
-        tab_strip.pack(fill="x")
-        tab_strip.pack_propagate(False)
-        self._enc_tab_btn = self._make_tab_btn(tab_strip, "  ⬡  Encrypt  ", lambda: self._switch_tab("enc"))
-        self._dec_tab_btn = self._make_tab_btn(tab_strip, "  ◎  Decrypt  ", lambda: self._switch_tab("dec"))
-        self._enc_tab_btn.pack(side="left", padx=(16, 2), pady=7)
-        self._dec_tab_btn.pack(side="left", padx=2, pady=7)
-
-        # ── Main area = content + history sidebar ─────────────────────────────
-        self._main = ctk.CTkFrame(self, fg_color=("gray92", "#181B22"), corner_radius=0)
-        self._main.pack(fill="both", expand=True)
-
-        # Content area (left)
-        self._content = ctk.CTkFrame(self._main, fg_color="transparent")
-        self._content.pack(side="left", fill="both", expand=True)
-
-        # History sidebar (right, collapsible)
-        self._hist_sidebar = ctk.CTkFrame(
-            self._main, width=230, fg_color=("gray88", "#13161C"),
-            corner_radius=0,
+        self._decrypt = DecryptPanel(
+            self._workspace,
+            log=self._log_event,
+            on_status=lambda *_: None,
         )
-        ctk.CTkFrame(self._hist_sidebar, width=1, fg_color=BORDER, corner_radius=0).pack(side="left", fill="y")
-        self._hist_panel = HistoryPanel(self._hist_sidebar)
-        self._hist_panel.pack(fill="both", expand=True, padx=(8, 8), pady=10)
-        self._hist_sidebar.pack(side="right", fill="y")
-        self._hist_sidebar.pack_propagate(False)
+        self._encrypt.pack(fill="both", expand=True)
+        self._current = self._encrypt
 
-        # Create tabs (status injected after)
-        self._enc_frame = EncryptTab(self._content, status_bar=self._make_noop())
-        self._dec_frame = DecryptTab(self._content, status_bar=self._make_noop())
-
-        # ── Status bar ────────────────────────────────────────────────────────
-        bottom = ctk.CTkFrame(self, height=30, fg_color=("gray86", "#0F1116"), corner_radius=0)
-        bottom.pack(side="bottom", fill="x")
-        bottom.pack_propagate(False)
-        ctk.CTkFrame(bottom, height=1, fg_color=BORDER, corner_radius=0).pack(fill="x")
-        self._status = StatusBar(bottom)
-        self._status.pack(side="left", fill="x", expand=True, padx=14, pady=4)
-        ctk.CTkLabel(bottom, text="v2.1  ●  AES-256 + LSB",
-                     font=("Segoe UI", 9), text_color=("gray60", "gray45")).pack(side="right", padx=14)
-
-        # Wire real status bar + history refresh into tabs
-        self._enc_frame._status = self._status
-        self._dec_frame._status = self._status
-        self._wire_history_refresh()
-
-        self._switch_tab("enc")
-
-    # ── History wiring ────────────────────────────────────────────────────────
-
-    def _wire_history_refresh(self):
-        """Patch embed/decrypt methods to refresh the history panel after each op."""
-        orig_embed   = self._enc_frame._embed_single
-        orig_decrypt = self._dec_frame._decrypt
-
-        def _patched_embed():
-            orig_embed()
-            self.after(800, self._hist_panel.refresh)
-
-        def _patched_decrypt():
-            orig_decrypt()
-            self.after(800, self._hist_panel.refresh)
-
-        self._enc_frame._embed_single = _patched_embed
-        self._dec_frame._decrypt      = _patched_decrypt
-
-    def _toggle_history(self):
-        if self._hist_var.get():
-            self._hist_sidebar.pack_forget()
-            self._hist_var.set(False)
+    # ── view switching ───────────────────────────────────────────────────────
+    def _switch(self, mode: str):
+        if mode == self._mode:
+            return
+        self._mode = mode
+        if mode == "encrypt":
+            self._eyebrow.configure(text="EMBED / ENCRYPT")
+            self._title.configure(
+                text="Hide an authenticated payload inside a lossless image")
+            self._decrypt.pack_forget()
+            self._encrypt.pack(fill="both", expand=True)
+            self._current = self._encrypt
+            self._seg.set("Encrypt")
         else:
-            self._hist_sidebar.pack(side="right", fill="y")
-            self._hist_var.set(True)
-            self._hist_panel.refresh()
+            self._eyebrow.configure(text="EXTRACT / DECRYPT")
+            self._title.configure(
+                text="Recover and verify a payload from a stego image")
+            self._encrypt.pack_forget()
+            self._decrypt.pack(fill="both", expand=True)
+            self._current = self._decrypt
+            self._seg.set("Decrypt")
+        self._sync_rail()
 
-    # ── Tab switching ─────────────────────────────────────────────────────────
+    def _sync_rail(self):
+        for key in ("encrypt", "decrypt"):
+            b = self._rail_btns[key]
+            ic = self._rail_btns[key + "_icon"]  # type: ignore
+            active = key == self._mode
+            b.configure(
+                fg_color="#3C2A0E" if active else "transparent",
+                border_width=1 if active else 0,
+                image=icon(ic, 16,
+                            theme.AMBER if active else theme.TEXT_LO),
+            )
 
-    def _make_tab_btn(self, parent, text, cmd):
-        return ctk.CTkButton(
-            parent, text=text, command=cmd, height=30,
-            font=("Segoe UI", 12), corner_radius=6,
-            fg_color=("gray80", "#2A2F3A"), hover_color=("gray72", "#343B48"),
-            text_color=("gray20", "gray75"),
-        )
-
-    def _switch_tab(self, which: str):
-        self._enc_frame.pack_forget()
-        self._dec_frame.pack_forget()
-        ac_fg  = (ACCENT, ACCENT)
-        ac_txt = ("#003D30", "#E0FFF8")
-        in_fg  = ("gray80", "#2A2F3A")
-        in_txt = ("gray20", "gray75")
-        if which == "enc":
-            self._enc_frame.pack(fill="both", expand=True, padx=10, pady=10)
-            self._enc_tab_btn.configure(fg_color=ac_fg, text_color=ac_txt)
-            self._dec_tab_btn.configure(fg_color=in_fg, text_color=in_txt)
-            self._status.set("Encrypt mode — select a cover image", "info")
+    def _toggle_console(self):
+        self._console_open = not self._console_open
+        if self._console_open:
+            self._drawer.pack(fill="x", side="bottom")
+            self._console_btn.configure(fg_color="#3C2A0E", border_width=1)
         else:
-            self._dec_frame.pack(fill="both", expand=True, padx=10, pady=10)
-            self._dec_tab_btn.configure(fg_color=ac_fg, text_color=ac_txt)
-            self._enc_tab_btn.configure(fg_color=in_fg, text_color=in_txt)
-            self._status.set("Decrypt mode — select a stego image", "info")
+            self._drawer.pack_forget()
+            self._console_btn.configure(fg_color="transparent", border_width=0)
 
-    # ── Theme toggle ──────────────────────────────────────────────────────────
+    def _clear_log(self):
+        self._log.clear()
+        self._log_count.set("0 entries", "neutral")
 
-    def _toggle_theme(self):
-        if ctk.get_appearance_mode() == "Dark":
-            ctk.set_appearance_mode("light")
-            self._theme_btn.configure(text="🌙  Dark")
-        else:
-            ctk.set_appearance_mode("dark")
-            self._theme_btn.configure(text="☀  Light")
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _make_noop(self):
-        class _N:
-            def set(self, *a, **k): pass
-        return _N()
+    def _log_event(self, msg: str, level: str = "info"):
+        self._log.add(msg, level)
+        self._log_count.set(f"{self._log.count} entries", "neutral")
 
 
 def run():
-    App().mainloop()
+    from .splash import SplashScreen
+
+    app = App()
+    app.withdraw()  # hide until splash finishes
+    SplashScreen(app, on_done=lambda: (app.deiconify(), app.lift()))
+    app.mainloop()
+
 
 if __name__ == "__main__":
     run()
