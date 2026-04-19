@@ -2270,3 +2270,213 @@ def session_id() -> str:
         _session_log.append(
             "".join(_random.choices("0123456789ABCDEF", k=4)))
     return _session_log[0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BytePeek — focused 1-pixel "before -> after" affordance
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BytePeek(ctk.CTkFrame):
+    """Three R/G/B rows showing exactly what happens to one sample pixel.
+
+    encrypt mode badge: FLIP / SAME (did the LSB write change the byte?)
+    decrypt mode badge: BIT 0 / BIT 1 (the recovered payload bit per channel)
+    """
+
+    CHANNELS = ("R", "G", "B")
+    CHANNEL_COLOR = {"R": "#FF6B6B", "G": "#7DF9C0", "B": "#5BE3F0"}
+
+    def __init__(self, master, *, mode: str = "encrypt"):
+        super().__init__(master, fg_color=theme.BG_2,
+                         corner_radius=theme.RADIUS_MD,
+                         border_width=1, border_color=theme.STROKE)
+        self._mode = mode
+        self._cover: tuple[int, int, int] | None = None
+        self._stego: tuple[int, int, int] | None = None
+        self._row_w: dict[str, dict] = {}
+
+        wrap = ctk.CTkFrame(self, fg_color="transparent")
+        wrap.pack(fill="x", padx=theme.PAD_MD, pady=theme.PAD_MD)
+
+        title = ("Bit-level preview - 1 sample pixel" if mode == "encrypt"
+                 else "Bit-level recovery - 1 sample pixel")
+        ctk.CTkLabel(wrap, text=title, font=theme.H3,
+                     text_color=theme.TEXT_HI, anchor="w").pack(
+            fill="x")
+        sub = ("This is exactly what gets written to one pixel."
+               if mode == "encrypt"
+               else "What we read from the stego pixel and the LSB recovered.")
+        ctk.CTkLabel(wrap, text=sub, font=theme.BODY_SM,
+                     text_color=theme.TEXT_LO, anchor="w").pack(
+            fill="x", pady=(0, theme.PAD_SM))
+
+        for ch in self.CHANNELS:
+            self._row_w[ch] = self._build_row(wrap, ch)
+
+    def _build_row(self, parent, ch: str) -> dict:
+        row = ctk.CTkFrame(parent, fg_color=theme.BG_3,
+                           corner_radius=theme.RADIUS_SM)
+        row.pack(fill="x", pady=2)
+        inner = ctk.CTkFrame(row, fg_color="transparent")
+        inner.pack(fill="x", padx=theme.PAD_SM, pady=6)
+
+        chip = ctk.CTkLabel(inner, text=f" {ch} ", font=theme.F_LABEL_B,
+                            fg_color=self.CHANNEL_COLOR[ch],
+                            text_color="#0A0F18",
+                            corner_radius=theme.RADIUS_SM, width=24)
+        chip.pack(side="left")
+
+        cover_dec = ctk.CTkLabel(inner, text="-", font=theme.MONO,
+                                 text_color=theme.TEXT_HI, width=36)
+        cover_dec.pack(side="left", padx=(theme.PAD_SM, theme.PAD_XS))
+
+        cover_bits = ctk.CTkLabel(inner, text="--------", font=theme.MONO,
+                                  text_color=theme.TEXT_MID)
+        cover_bits.pack(side="left", padx=theme.PAD_XS)
+
+        ctk.CTkLabel(inner, text="->", font=theme.BODY,
+                     text_color=theme.TEXT_DIM).pack(
+            side="left", padx=theme.PAD_SM)
+
+        stego_bits = ctk.CTkLabel(inner, text="--------", font=theme.MONO,
+                                  text_color=theme.TEXT_MID)
+        stego_bits.pack(side="left", padx=theme.PAD_XS)
+
+        stego_dec = ctk.CTkLabel(inner, text="-", font=theme.MONO,
+                                 text_color=theme.TEXT_HI, width=36)
+        stego_dec.pack(side="left", padx=theme.PAD_XS)
+
+        badge = ctk.CTkLabel(inner, text="-", font=theme.F_LABEL_B,
+                             fg_color=theme.BG_4, text_color=theme.TEXT_LO,
+                             corner_radius=theme.RADIUS_SM, width=64)
+        badge.pack(side="right")
+
+        return {"cover_dec": cover_dec, "cover_bits": cover_bits,
+                "stego_bits": stego_bits, "stego_dec": stego_dec,
+                "badge": badge}
+
+    @staticmethod
+    def _bits(n: int) -> str:
+        return format(n & 0xFF, "08b")
+
+    def set_cover_pixel(self, rgb: tuple[int, int, int]) -> None:
+        self._cover = (int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
+                       int(rgb[2]) & 0xFF)
+        for i, ch in enumerate(self.CHANNELS):
+            v = self._cover[i]
+            w = self._row_w[ch]
+            w["cover_dec"].configure(text=str(v))
+            w["cover_bits"].configure(text=self._bits(v))
+        self._refresh_badges()
+
+    def set_stego_pixel(self, rgb: tuple[int, int, int]) -> None:
+        self._stego = (int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
+                       int(rgb[2]) & 0xFF)
+        for i, ch in enumerate(self.CHANNELS):
+            v = self._stego[i]
+            w = self._row_w[ch]
+            w["stego_dec"].configure(text=str(v))
+            w["stego_bits"].configure(text=self._bits(v))
+        self._refresh_badges()
+
+    def clear(self) -> None:
+        self._cover = None
+        self._stego = None
+        for ch in self.CHANNELS:
+            w = self._row_w[ch]
+            w["cover_dec"].configure(text="-")
+            w["cover_bits"].configure(text="--------")
+            w["stego_dec"].configure(text="-")
+            w["stego_bits"].configure(text="--------")
+            w["badge"].configure(text="-", fg_color=theme.BG_4,
+                                 text_color=theme.TEXT_LO)
+
+    def _refresh_badges(self) -> None:
+        if self._cover is None:
+            return
+        for i, ch in enumerate(self.CHANNELS):
+            badge = self._row_w[ch]["badge"]
+            cv = self._cover[i]
+            if self._mode == "decrypt":
+                bit = cv & 1
+                badge.configure(
+                    text=f"BIT {bit}",
+                    fg_color=theme.AMBER if bit else theme.BG_5,
+                    text_color=theme.AMBER_INK if bit else theme.TEXT_HI)
+            else:
+                if self._stego is None:
+                    badge.configure(text="...", fg_color=theme.BG_4,
+                                    text_color=theme.TEXT_LO)
+                    continue
+                sv = self._stego[i]
+                if (cv & 1) != (sv & 1):
+                    badge.configure(text="FLIP", fg_color=theme.AMBER,
+                                    text_color=theme.AMBER_INK)
+                else:
+                    badge.configure(text="SAME", fg_color=theme.BG_5,
+                                    text_color=theme.TEXT_MID)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Toast — bottom-right transient notification with alpha fade
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Toast(ctk.CTkToplevel):
+    def __init__(self, parent, message: str, *, ms: int = 2400,
+                 kind: str = "info"):
+        super().__init__(parent)
+        self.overrideredirect(True)
+        try:
+            self.attributes("-topmost", True)
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        accent = {"info": theme.AMBER, "ok": theme.OK,
+                  "warn": theme.WARN, "err": theme.ERR}.get(kind, theme.AMBER)
+        self.configure(fg_color=theme.BG_2)
+
+        ctk.CTkFrame(self, fg_color=accent, width=4,
+                     corner_radius=0).pack(side="left", fill="y")
+        body = ctk.CTkFrame(self, fg_color=theme.BG_2,
+                            border_width=1, border_color=theme.STROKE)
+        body.pack(side="left", fill="both", expand=True)
+        ctk.CTkLabel(body, text=message, font=theme.BODY,
+                     text_color=theme.TEXT_HI, anchor="w").pack(
+            padx=theme.PAD_MD, pady=theme.PAD_SM)
+
+        self.update_idletasks()
+        try:
+            px = parent.winfo_rootx() + parent.winfo_width()
+            py = parent.winfo_rooty() + parent.winfo_height()
+            w = self.winfo_reqwidth()
+            h = self.winfo_reqheight()
+            self.geometry(f"+{px - w - 24}+{py - h - 24}")
+        except Exception:
+            pass
+
+        self._fade_in(0.0)
+        self.after(ms, self._fade_out)
+
+    def _fade_in(self, a: float) -> None:
+        try:
+            self.attributes("-alpha", a)
+        except Exception:
+            return
+        if a < 0.95:
+            self.after(20, lambda: self._fade_in(a + 0.15))
+
+    def _fade_out(self, a: float = 1.0) -> None:
+        try:
+            self.attributes("-alpha", a)
+        except Exception:
+            self.destroy()
+            return
+        if a <= 0.05:
+            self.destroy()
+            return
+        self.after(20, lambda: self._fade_out(a - 0.15))
+
+
+def show_toast(parent, message: str, *, kind: str = "info",
+               ms: int = 2400) -> Toast:
+    return Toast(parent, message, ms=ms, kind=kind)

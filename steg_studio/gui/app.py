@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from . import theme
+from . import prefs, theme
 from .assets import icon
 from .components import V2Badge, V2Segmented, ConsoleLog, session_id
 from .encrypt_panel import EncryptPanel
 from .decrypt_panel import DecryptPanel
+from .inspector_panel import InspectorPanel
 
 
 APP_NAME = "Steg Studio — Forensic Steganography Workstation"
@@ -37,7 +38,11 @@ class App(ctk.CTk):
         self.title(APP_NAME)
         self.geometry(GEOMETRY)
         self.minsize(*MIN_SIZE)
-        ctk.set_appearance_mode("dark")
+
+        # Apply persisted theme
+        saved = prefs.get("theme", "dark")
+        theme.set_mode(saved)
+        ctk.set_appearance_mode("dark" if saved == "dark" else "light")
         self.configure(fg_color=theme.BG_1)
 
         self._mode = "encrypt"
@@ -142,10 +147,17 @@ class App(ctk.CTk):
         right = ctk.CTkFrame(bar, fg_color="transparent")
         right.pack(side="right", padx=20, pady=12)
 
-        self._seg = V2Segmented(right, ["Encrypt", "Decrypt"],
+        self._seg = V2Segmented(right, ["Encrypt", "Decrypt", "Inspect"],
                                   on_change=lambda v: self._switch(v.lower()),
-                                  icons=["lock", "unlock"])
+                                  icons=["lock", "unlock", "chart"])
         self._seg.pack(side="left")
+
+        # Dark / Light toggle
+        self._theme_seg = V2Segmented(
+            right, ["Dark", "Light"],
+            on_change=lambda v: self._toggle_theme(v.lower()))
+        self._theme_seg.pack(side="left", padx=(12, 0))
+        self._theme_seg.set("Light" if theme.MODE == "light" else "Dark")
 
     def _build_rail(self, parent):
         rail = ctk.CTkFrame(parent, fg_color=theme.BG_2, width=56,
@@ -156,6 +168,7 @@ class App(ctk.CTk):
         items = [
             ("encrypt", "lock"),
             ("decrypt", "unlock"),
+            ("inspect", "chart"),
         ]
         self._rail_btns: dict[str, ctk.CTkButton] = {}
         for key, ic in items:
@@ -170,9 +183,7 @@ class App(ctk.CTk):
                                border_width=1 if key == self._mode else 0,
                                border_color="#6A4818",
                                corner_radius=6,
-                               command=(lambda k=key:
-                                         self._switch(k) if k in ("encrypt", "decrypt")
-                                         else None))
+                               command=(lambda k=key: self._switch(k)))
             b.pack(pady=4)
             self._rail_btns[key] = b
             self._rail_btns[key + "_icon"] = ic  # type: ignore
@@ -270,12 +281,15 @@ class App(ctk.CTk):
             self._workspace,
             log=self._log_event,
             on_status=lambda *_: None,
+            on_inspect=self._set_inspector,
         )
         self._decrypt = DecryptPanel(
             self._workspace,
             log=self._log_event,
             on_status=lambda *_: None,
+            on_inspect=self._set_inspector,
         )
+        self._inspect = InspectorPanel(self._workspace)
         self._encrypt.pack(fill="both", expand=True)
         self._current = self._encrypt
 
@@ -283,27 +297,56 @@ class App(ctk.CTk):
     def _switch(self, mode: str):
         if mode == self._mode:
             return
+        for panel in (self._encrypt, self._decrypt, self._inspect):
+            panel.pack_forget()
         self._mode = mode
         if mode == "encrypt":
             self._eyebrow.configure(text="EMBED / ENCRYPT")
             self._title.configure(
                 text="Hide an authenticated payload inside a lossless image")
-            self._decrypt.pack_forget()
             self._encrypt.pack(fill="both", expand=True)
             self._current = self._encrypt
             self._seg.set("Encrypt")
-        else:
+        elif mode == "decrypt":
             self._eyebrow.configure(text="EXTRACT / DECRYPT")
             self._title.configure(
                 text="Recover and verify a payload from a stego image")
-            self._encrypt.pack_forget()
             self._decrypt.pack(fill="both", expand=True)
             self._current = self._decrypt
             self._seg.set("Decrypt")
+        else:  # inspect
+            self._eyebrow.configure(text="FORENSIC INSPECTOR")
+            self._title.configure(
+                text="Trace of the most recent operation")
+            self._inspect.pack(fill="both", expand=True)
+            self._current = self._inspect
+            self._seg.set("Inspect")
         self._sync_rail()
 
+    def _set_inspector(self, state: dict):
+        try:
+            self._inspect.set_state(state)
+            self._log_event(
+                f"Inspector updated · {state.get('label','')}", "info")
+        except Exception as exc:
+            self._log_event(f"Inspector update failed · {exc}", "crit")
+
+    def _toggle_theme(self, mode: str):
+        if mode not in ("dark", "light"):
+            return
+        if theme.MODE == mode:
+            return
+        theme.set_mode(mode)
+        prefs.set("theme", mode)
+        try:
+            ctk.set_appearance_mode("dark" if mode == "dark" else "light")
+            self.configure(fg_color=theme.BG_1)
+        except Exception:
+            pass
+        self._log_event(f"Theme · {mode}", "info")
+
     def _sync_rail(self):
-        for key in ("encrypt", "decrypt"):
+        for key in ("encrypt", "decrypt", "inspect"):
             b = self._rail_btns[key]
             ic = self._rail_btns[key + "_icon"]  # type: ignore
             active = key == self._mode
