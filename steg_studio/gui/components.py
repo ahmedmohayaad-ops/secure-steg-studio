@@ -1824,6 +1824,21 @@ class CoverPreview(ctk.CTkFrame):
         self._placeholder = "NO IMAGE"
         self._render()
 
+    def show_image(self, img: "Image.Image", *, label: str = "IMAGE",
+                   mode: str | None = None):
+        """Render an already-loaded PIL image. `label` replaces the filename
+        chip in the corner. Use a real filename-like token (e.g. 'STEGO',
+        'COVER.PNG') rather than the generic placeholder."""
+        try:
+            self._raw = img.convert("RGB")
+            self._dims = img.size
+            self._mode = mode or getattr(img, "mode", "RGB")
+            self._path = label  # used only as the corner label / truthy marker
+            self._placeholder = label
+            self._render()
+        except Exception:
+            pass
+
     def set_progress(self, p: float, running: bool):
         # The preview image itself doesn't change during encode/decode;
         # only redraw at transitions (start/finish) to avoid re-thumbnailing
@@ -2480,3 +2495,73 @@ class Toast(ctk.CTkToplevel):
 def show_toast(parent, message: str, *, kind: str = "info",
                ms: int = 2400) -> Toast:
     return Toast(parent, message, ms=ms, kind=kind)
+
+
+class ActivityLog(ctk.CTkFrame):
+    """Scrolling narration of what the pipeline is doing right now.
+
+    Each entry is a timestamped line with a colored dot. Tones: info, accent,
+    ok, crit. Use ``add(msg, tone)`` to append; ``reset()`` to clear.
+    """
+    TONES = {
+        "info":   theme.TEXT_LO,
+        "accent": theme.AMBER,
+        "ok":     theme.OK,
+        "crit":   theme.ERR,
+    }
+
+    def __init__(self, master, *, max_lines: int = 40):
+        super().__init__(master, fg_color="transparent")
+        self._max = max_lines
+        self._scroll = ctk.CTkScrollableFrame(
+            self, fg_color=theme.BG_3, corner_radius=theme.RADIUS_SM,
+            height=160, border_width=1, border_color=theme.STROKE)
+        self._scroll.pack(fill="both", expand=True)
+        self._lines: list[ctk.CTkFrame] = []
+        self._empty = ctk.CTkLabel(
+            self._scroll,
+            text="Pick an image to start — narration will appear here.",
+            font=theme.BODY_SM, text_color=theme.TEXT_DIM, anchor="w")
+        self._empty.pack(fill="x", padx=theme.PAD_SM, pady=theme.PAD_SM)
+
+    def reset(self) -> None:
+        for row in self._lines:
+            try:
+                row.destroy()
+            except Exception:
+                pass
+        self._lines.clear()
+        try:
+            self._empty.pack(fill="x", padx=theme.PAD_SM, pady=theme.PAD_SM)
+        except Exception:
+            pass
+
+    def add(self, msg: str, tone: str = "info") -> None:
+        color = self.TONES.get(tone, theme.TEXT_LO)
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%H:%M:%S")
+        try:
+            self._empty.pack_forget()
+        except Exception:
+            pass
+        row = ctk.CTkFrame(self._scroll, fg_color="transparent")
+        row.pack(fill="x", padx=theme.PAD_SM, pady=1)
+        ctk.CTkLabel(row, text="●", text_color=color,
+                     font=("Segoe UI", 11), width=14).pack(side="left")
+        ctk.CTkLabel(row, text=ts, text_color=theme.TEXT_DIM,
+                     font=theme.MONO_SM if hasattr(theme, "MONO_SM")
+                     else ("JetBrains Mono", 9),
+                     width=66, anchor="w").pack(side="left",
+                                                padx=(0, theme.PAD_SM))
+        ctk.CTkLabel(row, text=msg, text_color=theme.TEXT_HI,
+                     font=theme.BODY_SM, anchor="w",
+                     justify="left").pack(side="left",
+                                          fill="x", expand=True)
+        self._lines.append(row)
+        # Trim
+        while len(self._lines) > self._max:
+            old = self._lines.pop(0)
+            try:
+                old.destroy()
+            except Exception:
+                pass

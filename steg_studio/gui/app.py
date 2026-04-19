@@ -29,7 +29,7 @@ from .inspector_panel import InspectorPanel
 
 APP_NAME = "Steg Studio — Forensic Steganography Workstation"
 GEOMETRY = "1480x900"
-MIN_SIZE = (1240, 760)
+MIN_SIZE = (900, 600)
 
 
 class App(ctk.CTk):
@@ -325,6 +325,20 @@ class App(ctk.CTk):
 
     def _set_inspector(self, state: dict):
         try:
+            kind = state.get("kind")
+            if kind == "narrate":
+                self._inspect.narrate(state.get("msg", ""),
+                                      state.get("tone", "info"))
+                return
+            if kind == "reset_narration":
+                self._inspect.reset_narration()
+                return
+            if kind == "update_capacity":
+                self._inspect.update_capacity(state)
+                return
+            if state.get("preview"):
+                self._inspect.set_preview_state(state)
+                return
             self._inspect.set_state(state)
             self._log_event(
                 f"Inspector updated · {state.get('label','')}", "info")
@@ -340,10 +354,22 @@ class App(ctk.CTk):
         prefs.set("theme", mode)
         try:
             ctk.set_appearance_mode("dark" if mode == "dark" else "light")
-            self.configure(fg_color=theme.BG_1)
         except Exception:
             pass
+        # Full UI rebuild: our widgets capture theme tokens at build time and
+        # do not listen for palette changes, so the only reliable way to
+        # repaint is to tear down and re-create the shell.
+        self._rebuild_ui()
         self._log_event(f"Theme · {mode}", "info")
+
+    def _rebuild_ui(self):
+        for child in list(self.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        self.configure(fg_color=theme.BG_1)
+        self._build()
 
     def _sync_rail(self):
         for key in ("encrypt", "decrypt", "inspect"):

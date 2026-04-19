@@ -19,7 +19,6 @@ from steg_studio.core import check_magic, decode, get_image_info
 from . import theme
 from .assets import icon
 from .components import (
-    BytePeek,
     ResultBox,
     V2AudioResult,
     V2Badge,
@@ -61,8 +60,6 @@ class DecryptPanel(ctk.CTkFrame):
 
         self._build_inputs_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(theme.PAD_LG, theme.PAD_MD))
-        self._peek = BytePeek(wrap, mode="decrypt")
-        self._peek.pack(fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_MD))
         self._build_result_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_LG))
 
@@ -149,9 +146,7 @@ class DecryptPanel(ctk.CTkFrame):
                 stego_img.load()
                 self._stego_img = stego_img
                 w, h = stego_img.size
-                xy = (w // 2, h // 2)
-                self._sample_xy = xy
-                self._peek.set_cover_pixel(stego_img.getpixel(xy))
+                self._sample_xy = (w // 2, h // 2)
             except Exception:
                 pass
             self._stego_dz.set_meta(
@@ -161,6 +156,22 @@ class DecryptPanel(ctk.CTkFrame):
             pass
         self._result = None
         self._result_box.show_idle()
+
+        encrypted = None
+        try:
+            encrypted = check_magic(path)
+        except Exception:
+            pass
+        self._push_preview(encrypted=encrypted)
+        try:
+            self._on_inspect({
+                "kind": "narrate",
+                "msg": (f"Loaded {os.path.basename(path)} · "
+                        f"encrypted={'yes' if encrypted else 'no/unknown'}"),
+                "tone": "info",
+            })
+        except Exception:
+            pass
 
         def _probe():
             try:
@@ -172,6 +183,33 @@ class DecryptPanel(ctk.CTkFrame):
                 pass
         threading.Thread(target=_probe, daemon=True).start()
         self._refresh()
+
+    def _push_preview(self, *, encrypted: bool | None = None):
+        if self._stego_img is None:
+            return
+        label = os.path.basename(self._stego_path or "stego")
+        state = {
+            "mode": "decrypt",
+            "preview": True,
+            "cover_image": self._stego_img,
+            "payload_bytes": 0,
+            "label": label,
+        }
+        if encrypted is not None:
+            state["encrypted"] = encrypted
+        try:
+            self._on_inspect(state)
+        except Exception:
+            pass
+
+    def _narrate(self, msg: str, tone: str = "info"):
+        try:
+            if msg == "reset":
+                self._on_inspect({"kind": "reset_narration"})
+            else:
+                self._on_inspect({"kind": "narrate", "msg": msg, "tone": tone})
+        except Exception:
+            pass
 
     def _refresh(self):
         ok = bool(self._stego_path and self._pw_var.get())
@@ -193,10 +231,14 @@ class DecryptPanel(ctk.CTkFrame):
 
         self._running = True
         self._result = None
+        self._last_stage = 0
         self._prog.reset()
         self._status_badge.set("SCANNING LSB", "warn")
         self._result_box.show_idle()
         self._log(f"▶ Begin decryption · {os.path.basename(path)}", "accent")
+        self._narrate("reset", "")
+        self._narrate(
+            f"Starting decryption · {os.path.basename(path)}", "accent")
         self._refresh()
 
         fn = lambda progress_callback: decode(path, pwd, progress_callback)
@@ -207,6 +249,22 @@ class DecryptPanel(ctk.CTkFrame):
 
     def _on_progress(self, p: float):
         self._prog.set(p)
+        stage = self._last_stage
+        if p > 0 and stage < 1:
+            self._narrate(
+                "Reading MAGIC + SIZE header · extracting LSBs from R/G/B",
+                "info")
+            self._last_stage = 1
+        if p >= 0.60 and stage < 2:
+            self._narrate(
+                "Verifying HMAC-SHA256 · authenticating ciphertext",
+                "info")
+            self._last_stage = 2
+        if p >= 0.80 and stage < 3:
+            self._narrate(
+                "Decrypting with derived key · AES-128-CBC",
+                "info")
+            self._last_stage = 3
 
     def _on_done(self, result: dict):
         self._running = False
@@ -218,6 +276,8 @@ class DecryptPanel(ctk.CTkFrame):
         typ = result["type"]
         data = result["data"]
         size = len(data)
+        self._narrate(
+            f"Recovered {size:,} B · type={typ}", "ok")
         self._log(f"✓ Payload authenticated · {size:,} B recovered", "ok")
 
         if typ == "audio":
@@ -280,6 +340,7 @@ class DecryptPanel(ctk.CTkFrame):
         self._result_box.show_error(
             f"HMAC verification failed — wrong passphrase or corrupted stego.\n"
             f"Detail: {exc}")
+        self._narrate(f"HMAC mismatch · {exc}", "crit")
         self._log(f"✗ HMAC mismatch · {exc}", "crit")
         try:
             show_toast(self.winfo_toplevel(),

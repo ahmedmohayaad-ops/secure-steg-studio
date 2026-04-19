@@ -14,13 +14,13 @@ import customtkinter as ctk
 from PIL import Image as _PI
 
 from steg_studio.core import (
-    encode_text, encode_file, encode_audio, get_image_info, estimate_encrypted_size,
+    check_magic, encode_text, encode_file, encode_audio,
+    get_image_info, estimate_encrypted_size,
 )
 
 from . import theme
 from .assets import icon
 from .components import (
-    BytePeek,
     V2Badge,
     V2Button,
     V2Card,
@@ -54,6 +54,7 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out: str | None = None
         self._pending_image: _PI.Image | None = None
         self._sample_xy: tuple[int, int] | None = None
+        self._last_preview_size: int = -1
 
         self._build()
         self._refresh()
@@ -68,8 +69,6 @@ class EncryptPanel(ctk.CTkFrame):
 
         self._build_inputs_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(theme.PAD_LG, theme.PAD_MD))
-        self._peek = BytePeek(wrap, mode="encrypt")
-        self._peek.pack(fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_MD))
         self._build_summary_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_MD))
         self._build_action_card(wrap).pack(
@@ -235,14 +234,28 @@ class EncryptPanel(ctk.CTkFrame):
             cover.load()
             self._cover_img = cover
             w, h = cover.size
-            xy = (w // 2, h // 2)
-            self._sample_xy = xy
-            self._peek.set_cover_pixel(cover.getpixel(xy))
+            self._sample_xy = (w // 2, h // 2)
         except Exception:
             pass
         self._log(f"Cover loaded · {os.path.basename(path)} · "
                   f"{theme.fmt_bytes(info['capacity_bytes'])} capacity",
                   "info")
+        try:
+            encrypted = check_magic(path)
+        except Exception:
+            encrypted = None
+        self._push_preview(encrypted=encrypted)
+        try:
+            self._on_inspect({
+                "kind": "narrate",
+                "msg": (f"Loaded {os.path.basename(path)} · "
+                        f"{info['width']}×{info['height']} · "
+                        f"capacity {theme.fmt_bytes(info['capacity_bytes'])} · "
+                        f"encrypted={'yes' if encrypted else 'no'}"),
+                "tone": "info",
+            })
+        except Exception:
+            pass
         self._refresh()
 
     def _on_payload_file(self, path: str):
@@ -269,6 +282,39 @@ class EncryptPanel(ctk.CTkFrame):
             self._payload_dz.pack(fill="x")
             self._payload_kind = "file"
         self._refresh()
+
+    def _push_capacity_only(self):
+        if self._cover_info is None:
+            return
+        try:
+            self._on_inspect({
+                "kind": "update_capacity",
+                "payload_bytes": self._payload_size(),
+                "raw_bytes": self._payload_size(),
+                "encrypted_bytes": (estimate_encrypted_size(self._payload_size())
+                                    if self._payload_size() else 0),
+                "capacity_bytes": self._cover_info["capacity_bytes"],
+            })
+        except Exception:
+            pass
+
+    def _push_preview(self, *, encrypted: bool | None = None):
+        if self._cover_img is None:
+            return
+        label = os.path.basename(self._cover_path or "cover")
+        state = {
+            "mode": "encrypt",
+            "preview": True,
+            "cover_image": self._cover_img,
+            "payload_bytes": self._payload_size(),
+            "label": label,
+        }
+        if encrypted is not None:
+            state["encrypted"] = encrypted
+        try:
+            self._on_inspect(state)
+        except Exception:
+            pass
 
     def _payload_size(self) -> int:
         if self._payload_kind == "text":
@@ -341,6 +387,16 @@ class EncryptPanel(ctk.CTkFrame):
         self._export_btn.configure(
             state="normal" if self._complete else "disabled")
 
+        # Keep Inspector capacity bars in sync with the payload size
+        # while the user types / picks files (legacy behavior) — but only
+        # push when the payload size actually changed, to avoid re-rendering
+        # the canvas thumbnail on every keystroke.
+        if self._cover_img is not None and not self._running:
+            cur = self._payload_size()
+            if cur != self._last_preview_size:
+                self._last_preview_size = cur
+                self._push_capacity_only()
+
     # ── run ───────────────────────────────────────────────────────────────
     def _run(self):
         if self._running:
@@ -372,30 +428,65 @@ class EncryptPanel(ctk.CTkFrame):
         self._running = True
         self._complete = False
         self._stego_out = None
+        self._last_stage = 0  # 0=idle,1=kdf,2=cipher,3=mac,4=embed
         self._prog.reset()
         self._refresh()
 
         self._log(f"▶ Begin encryption · {label}", "accent")
+        self._narrate("reset", "")
+        self._narrate(
+            f"Starting encryption · {label} · "
+            f"cover {os.path.basename(self._cover_path or '')}", "accent")
         run_in_thread(self, fn,
                       on_progress=self._on_progress,
                       on_done=self._on_done,
                       on_error=self._on_error)
 
+    def _narrate(self, msg: str, tone: str = "info"):
+        try:
+            if msg == "reset":
+                self._on_inspect({"kind": "reset_narration"})
+            else:
+                self._on_inspect({"kind": "narrate", "msg": msg, "tone": tone})
+        except Exception:
+            pass
+
     def _on_progress(self, p: float):
         self._prog.set(p)
+        # Derive narration stages from progress breakpoints so the user
+        # sees the crypto pipeline advance without threading events from core.
+        stage = self._last_stage
+        if p > 0 and stage < 1:
+            self._narrate(
+                "Deriving 128-bit key · PBKDF2-HMAC-SHA256 · "
+                "16 B salt · 480,000 iterations", "info")
+            self._last_stage = 1
+        if p >= 0.05 and stage < 2:
+            self._narrate(
+                "Encrypting payload · AES-128-CBC · 16 B IV (nonce)",
+                "info")
+            self._last_stage = 2
+        if p >= 0.15 and stage < 3:
+            self._narrate(
+                "Authenticating · HMAC-SHA256 · 32 B tag",
+                "info")
+            self._last_stage = 3
+        if p >= 0.20 and stage < 4:
+            cap = (self._cover_info or {}).get("capacity_bytes", 0)
+            raw = estimate_encrypted_size(self._payload_size()) \
+                if self._payload_size() else 0
+            pct = (raw / cap * 100) if cap else 0
+            self._narrate(
+                f"Embedding {theme.fmt_bytes(raw)} into R/G/B LSBs · "
+                f"{pct:.1f}% of capacity", "info")
+            self._last_stage = 4
 
     def _on_done(self, stego_img):
         self._running = False
         self._complete = True
         self._prog.set(1.0, color=theme.OK)
         self._pending_image = stego_img
-        # Update BytePeek with the post-encode pixel.
-        try:
-            if self._sample_xy is not None and stego_img is not None:
-                self._peek.set_stego_pixel(
-                    stego_img.convert("RGB").getpixel(self._sample_xy))
-        except Exception:
-            pass
+        self._narrate("Done · stego ready", "ok")
         self._log("✓ Embedded payload across R/G/B · stego ready", "ok")
         try:
             show_toast(self.winfo_toplevel(), "Stego ready", kind="ok")
@@ -427,6 +518,7 @@ class EncryptPanel(ctk.CTkFrame):
         self._running = False
         self._complete = False
         self._prog.reset()
+        self._narrate(f"Encryption failed · {exc}", "crit")
         self._log(f"✗ Encryption failed · {exc}", "crit")
         messagebox.showerror("Encryption failed", str(exc))
         self._refresh()
@@ -462,8 +554,5 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out = None
         self._pending_image = None
         self._prog.reset()
-        self._peek.clear()
-        if self._cover_img and self._sample_xy:
-            self._peek.set_cover_pixel(
-                self._cover_img.getpixel(self._sample_xy))
+        self._push_preview()
         self._refresh()
