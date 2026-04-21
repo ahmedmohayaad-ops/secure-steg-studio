@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 _PATH = Path.home() / ".steg_studio" / "prefs.json"
-_DEFAULTS: dict[str, Any] = {"theme": "dark"}
+_DEFAULTS: dict[str, Any] = {"theme": "dark", "drawer_height": 200}
+_warned_save = False
 
 
 def load() -> dict[str, Any]:
@@ -21,11 +23,15 @@ def load() -> dict[str, Any]:
 
 
 def save(prefs: dict[str, Any]) -> None:
+    global _warned_save
     try:
         _PATH.parent.mkdir(parents=True, exist_ok=True)
         _PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        if not _warned_save:
+            print(f"[steg_studio] warning: cannot persist prefs to {_PATH}: {exc}",
+                  file=sys.stderr)
+            _warned_save = True
 
 
 def get(key: str, default: Any = None) -> Any:

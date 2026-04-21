@@ -21,7 +21,14 @@ import customtkinter as ctk
 
 from . import prefs, theme
 from .assets import icon
-from .components import V2Badge, V2Segmented, ConsoleLog, session_id
+from .components import V2Badge, V2Segmented, ConsoleLog, Tooltip, session_id
+
+try:
+    import psutil
+    _PSUTIL_OK = True
+except Exception:  # noqa: BLE001
+    psutil = None
+    _PSUTIL_OK = False
 from .encrypt_panel import EncryptPanel
 from .decrypt_panel import DecryptPanel
 from .inspector_panel import InspectorPanel
@@ -47,7 +54,12 @@ class App(ctk.CTk):
 
         self._mode = "encrypt"
         self._console_open = True
+        self._drawer_height = int(prefs.get("drawer_height", 200) or 200)
+        self._drawer_height = max(80, min(400, self._drawer_height))
         self._build()
+        self._bind_shortcuts()
+        if _PSUTIL_OK:
+            self.after(500, self._tick_metrics)
 
     # ── shell ────────────────────────────────────────────────────────────────
     def _build(self):
@@ -66,12 +78,25 @@ class App(ctk.CTk):
                                         fg_color=theme.BG_1, corner_radius=0)
         self._workspace.pack(fill="both", expand=True)
 
-        # Console drawer
+        # Console drawer (with drag handle above it for vertical resize)
         self._drawer = ctk.CTkFrame(self._main_col, fg_color=theme.BG_2,
-                                     height=200, corner_radius=0,
-                                     border_width=0)
+                                     height=self._drawer_height,
+                                     corner_radius=0, border_width=0)
         self._drawer.pack(fill="x", side="bottom")
         self._drawer.pack_propagate(False)
+
+        self._grip = ctk.CTkFrame(self._main_col, fg_color=theme.STROKE_HI,
+                                   height=4, corner_radius=0, cursor="sb_v_double_arrow")
+        self._grip.pack(fill="x", side="bottom", before=self._drawer)
+        self._grip.bind("<Enter>",
+                        lambda _e: self._grip.configure(fg_color=theme.AMBER))
+        self._grip.bind("<Leave>",
+                        lambda _e: self._grip.configure(fg_color=theme.STROKE_HI))
+        self._grip.bind("<ButtonPress-1>", self._grip_press)
+        self._grip.bind("<B1-Motion>", self._grip_drag)
+        self._grip.bind("<ButtonRelease-1>", self._grip_release)
+        self._grip_origin = None
+
         self._build_drawer()
 
         self._build_statusbar()
@@ -158,6 +183,7 @@ class App(ctk.CTk):
             on_change=lambda v: self._toggle_theme(v.lower()))
         self._theme_seg.pack(side="left", padx=(12, 0))
         self._theme_seg.set("Light" if theme.MODE == "light" else "Dark")
+        Tooltip(self._theme_seg, "Dark / Light theme  (Ctrl+T)")
 
     def _build_rail(self, parent):
         rail = ctk.CTkFrame(parent, fg_color=theme.BG_2, width=56,
@@ -166,12 +192,12 @@ class App(ctk.CTk):
         rail.pack_propagate(False)
 
         items = [
-            ("encrypt", "lock"),
-            ("decrypt", "unlock"),
-            ("inspect", "chart"),
+            ("encrypt", "lock", "Encrypt  (Ctrl+1)"),
+            ("decrypt", "unlock", "Decrypt  (Ctrl+2)"),
+            ("inspect", "chart", "Inspect  (Ctrl+3)"),
         ]
         self._rail_btns: dict[str, ctk.CTkButton] = {}
-        for key, ic in items:
+        for key, ic, tip in items:
             b = ctk.CTkButton(rail, text="",
                                image=icon(ic, 16,
                                            theme.AMBER if key == self._mode
@@ -185,6 +211,7 @@ class App(ctk.CTk):
                                corner_radius=6,
                                command=(lambda k=key: self._switch(k)))
             b.pack(pady=4)
+            Tooltip(b, tip)
             self._rail_btns[key] = b
             self._rail_btns[key + "_icon"] = ic  # type: ignore
 
@@ -202,6 +229,7 @@ class App(ctk.CTk):
             corner_radius=6,
             command=self._toggle_console)
         self._console_btn.pack(pady=8)
+        Tooltip(self._console_btn, "Toggle event log  (Ctrl+L)")
 
     def _build_drawer(self):
         head = ctk.CTkFrame(self._drawer, fg_color=theme.BG_2,
@@ -271,10 +299,21 @@ class App(ctk.CTk):
         sep()
         chunk("LSB · 1-bit · G-channel primary")
 
-        right_chunk = lambda text, color=theme.TEXT_LO: ctk.CTkLabel(
-            bar, text=text, font=("JetBrains Mono", 10),
-            text_color=color).pack(side="right", padx=8)
-        right_chunk(f"v2.1.0 · session {session_id()}", theme.AMBER)
+        # Right side: version + live metrics (if psutil)
+        ctk.CTkLabel(bar, text=f"v2.1.0 · session {session_id()}",
+                     font=("JetBrains Mono", 10),
+                     text_color=theme.AMBER).pack(side="right", padx=8)
+        if _PSUTIL_OK:
+            ctk.CTkLabel(bar, text="│", text_color=theme.TEXT_DIM,
+                         font=("Segoe UI", 11)).pack(side="right", padx=4)
+            self._cpu_lbl = ctk.CTkLabel(
+                bar, text="cpu —", font=("JetBrains Mono", 10),
+                text_color=theme.TEXT_LO)
+            self._cpu_lbl.pack(side="right", padx=4)
+            self._mem_lbl = ctk.CTkLabel(
+                bar, text="mem —", font=("JetBrains Mono", 10),
+                text_color=theme.TEXT_LO)
+            self._mem_lbl.pack(side="right", padx=4)
 
     def _build_panels(self):
         self._encrypt = EncryptPanel(
@@ -387,9 +426,11 @@ class App(ctk.CTk):
         self._console_open = not self._console_open
         if self._console_open:
             self._drawer.pack(fill="x", side="bottom")
+            self._grip.pack(fill="x", side="bottom", before=self._drawer)
             self._console_btn.configure(fg_color="#3C2A0E", border_width=1)
         else:
             self._drawer.pack_forget()
+            self._grip.pack_forget()
             self._console_btn.configure(fg_color="transparent", border_width=0)
 
     def _clear_log(self):
@@ -399,6 +440,57 @@ class App(ctk.CTk):
     def _log_event(self, msg: str, level: str = "info"):
         self._log.add(msg, level)
         self._log_count.set(f"{self._log.count} entries", "neutral")
+
+    # ── drawer resize ────────────────────────────────────────────────────────
+    def _grip_press(self, event):
+        self._grip_origin = (event.y_root, self._drawer_height)
+
+    def _grip_drag(self, event):
+        if self._grip_origin is None or not self._console_open:
+            return
+        y0, h0 = self._grip_origin
+        delta = y0 - event.y_root  # up = larger drawer
+        new_h = max(80, min(400, h0 + delta))
+        if new_h != self._drawer_height:
+            self._drawer_height = new_h
+            self._drawer.configure(height=new_h)
+
+    def _grip_release(self, _event):
+        self._grip_origin = None
+        prefs.set("drawer_height", self._drawer_height)
+
+    # ── shortcuts ────────────────────────────────────────────────────────────
+    def _bind_shortcuts(self):
+        # Bind on the toplevel only — bind_all + duplicate case bindings
+        # caused double-fires under Caps Lock.
+        self.bind("<Control-Key-1>", lambda _e: self._switch("encrypt"))
+        self.bind("<Control-Key-2>", lambda _e: self._switch("decrypt"))
+        self.bind("<Control-Key-3>", lambda _e: self._switch("inspect"))
+        self.bind("<Control-Key-l>", lambda _e: self._toggle_console())
+        self.bind("<Control-Key-t>",
+                  lambda _e: self._toggle_theme(
+                      "light" if theme.MODE == "dark" else "dark"))
+
+    # ── status bar live metrics ──────────────────────────────────────────────
+    def _tick_metrics(self):
+        # Stop ticking once the window has been destroyed.
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            if _PSUTIL_OK and hasattr(self, "_mem_lbl"):
+                mem = psutil.virtual_memory().percent
+                cpu = psutil.cpu_percent(interval=None)
+                self._mem_lbl.configure(text=f"mem {mem:.0f}%")
+                self._cpu_lbl.configure(text=f"cpu {cpu:.0f}%")
+        except Exception:
+            pass
+        try:
+            self.after(2000, self._tick_metrics)
+        except Exception:
+            pass
 
 
 def run():

@@ -2,4 +2,5 @@ customtkinter>=5.2.0
 Pillow>=10.0.0
 cryptography>=41.0.0
 numpy>=1.24.0
-pyaudio>=0.2.14
+pyaudio>=0.2.14  # optional: voice capture (may require system PortAudio)
+psutil>=5.9.0    # optional: live status bar metrics

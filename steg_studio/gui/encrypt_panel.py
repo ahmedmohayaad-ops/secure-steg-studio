@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
 import customtkinter as ctk
 from PIL import Image as _PI
@@ -21,6 +21,9 @@ from steg_studio.core import (
 from . import theme
 from .assets import icon
 from .components import (
+    CapacityRing,
+    HexSpinner,
+    Tooltip,
     V2Badge,
     V2Button,
     V2Card,
@@ -29,7 +32,9 @@ from .components import (
     V2ProgressBar,
     V2Segmented,
     V2VoiceCard,
+    password_strength,
     show_toast,
+    themed_message,
 )
 from .workers import run_in_thread
 
@@ -133,37 +138,91 @@ class EncryptPanel(ctk.CTkFrame):
         row2.grid_columnconfigure(0, weight=1, uniform="r2")
         row2.grid_columnconfigure(1, weight=1, uniform="r2")
 
+        self._pw_var = ctk.StringVar()
+        self._pw_var.trace_add("write", lambda *_: self._refresh())
+        self._pw2_var = ctk.StringVar()
+        self._pw2_var.trace_add("write", lambda *_: self._refresh())
+        self._pw_shown = False
+        self._pw2_shown = False
+
         p1 = ctk.CTkFrame(row2, fg_color="transparent")
         p1.grid(row=0, column=0, sticky="ew", padx=(0, theme.PAD_SM))
         ctk.CTkLabel(p1, text="PASSPHRASE", font=theme.LABEL,
                      text_color=theme.TEXT_DIM, anchor="w").pack(
             anchor="w", pady=(0, theme.PAD_XS))
-        self._pw_var = ctk.StringVar()
-        self._pw_var.trace_add("write", lambda *_: self._refresh())
+        pw_wrap = ctk.CTkFrame(p1, fg_color="transparent")
+        pw_wrap.pack(fill="x")
         self._pw = ctk.CTkEntry(
-            p1, textvariable=self._pw_var, show="●", height=36,
+            pw_wrap, textvariable=self._pw_var, show="●", height=36,
             fg_color=theme.BG_4, border_color=theme.STROKE_HI,
             border_width=1, text_color=theme.TEXT_HI,
             font=theme.MONO, placeholder_text="min. 6 chars",
             corner_radius=theme.RADIUS_SM)
-        self._pw.pack(fill="x")
+        self._pw.pack(side="left", fill="x", expand=True)
+        self._pw_eye = ctk.CTkButton(
+            pw_wrap, text="", width=34, height=36,
+            image=icon("eye", 16, theme.TEXT_LO),
+            fg_color=theme.BG_4, hover_color=theme.BG_5,
+            corner_radius=theme.RADIUS_SM, border_width=1,
+            border_color=theme.STROKE_HI,
+            command=lambda: self._toggle_pw_show(1))
+        self._pw_eye.pack(side="left", padx=(6, 0))
+        Tooltip(self._pw_eye, "Show/hide passphrase")
 
         p2 = ctk.CTkFrame(row2, fg_color="transparent")
         p2.grid(row=0, column=1, sticky="ew", padx=(theme.PAD_SM, 0))
         ctk.CTkLabel(p2, text="CONFIRM", font=theme.LABEL,
                      text_color=theme.TEXT_DIM, anchor="w").pack(
             anchor="w", pady=(0, theme.PAD_XS))
-        self._pw2_var = ctk.StringVar()
-        self._pw2_var.trace_add("write", lambda *_: self._refresh())
+        pw2_wrap = ctk.CTkFrame(p2, fg_color="transparent")
+        pw2_wrap.pack(fill="x")
         self._pw2 = ctk.CTkEntry(
-            p2, textvariable=self._pw2_var, show="●", height=36,
+            pw2_wrap, textvariable=self._pw2_var, show="●", height=36,
             fg_color=theme.BG_4, border_color=theme.STROKE_HI,
             border_width=1, text_color=theme.TEXT_HI,
             font=theme.MONO, placeholder_text="re-enter",
             corner_radius=theme.RADIUS_SM)
-        self._pw2.pack(fill="x")
+        self._pw2.pack(side="left", fill="x", expand=True)
+        self._pw2_eye = ctk.CTkButton(
+            pw2_wrap, text="", width=34, height=36,
+            image=icon("eye", 16, theme.TEXT_LO),
+            fg_color=theme.BG_4, hover_color=theme.BG_5,
+            corner_radius=theme.RADIUS_SM, border_width=1,
+            border_color=theme.STROKE_HI,
+            command=lambda: self._toggle_pw_show(2))
+        self._pw2_eye.pack(side="left", padx=(6, 0))
+        Tooltip(self._pw2_eye, "Show/hide confirmation")
+
+        # Strength pill row
+        strength_row = ctk.CTkFrame(card, fg_color="transparent")
+        strength_row.pack(fill="x", padx=theme.PAD_MD,
+                          pady=(0, theme.PAD_MD))
+        ctk.CTkLabel(strength_row, text="STRENGTH",
+                     font=theme.LABEL, text_color=theme.TEXT_DIM
+                     ).pack(side="left")
+        self._pw_strength = ctk.CTkLabel(
+            strength_row, text="—",
+            font=(theme.FONT_FAMILY, 10, "bold"),
+            text_color=theme.TEXT_DIM,
+            fg_color=theme.BG_3, corner_radius=6,
+            width=80, height=20)
+        self._pw_strength.pack(side="left", padx=theme.PAD_SM)
 
         return card
+
+    def _toggle_pw_show(self, which: int):
+        if which == 1:
+            self._pw_shown = not self._pw_shown
+            self._pw.configure(show="" if self._pw_shown else "●")
+            self._pw_eye.configure(
+                image=icon("eye_off" if self._pw_shown else "eye",
+                           16, theme.AMBER if self._pw_shown else theme.TEXT_LO))
+        else:
+            self._pw2_shown = not self._pw2_shown
+            self._pw2.configure(show="" if self._pw2_shown else "●")
+            self._pw2_eye.configure(
+                image=icon("eye_off" if self._pw2_shown else "eye",
+                           16, theme.AMBER if self._pw2_shown else theme.TEXT_LO))
 
     def _build_summary_card(self, parent) -> V2Card:
         card = V2Card(parent)
@@ -172,17 +231,31 @@ class EncryptPanel(ctk.CTkFrame):
                                                   theme.PAD_SM))
         ctk.CTkLabel(h, text="Summary", font=theme.H3,
                      text_color=theme.TEXT_HI).pack(side="left")
+        self._spinner = HexSpinner(h, accent=theme.AMBER)
+        self._spinner.pack(side="left", padx=(theme.PAD_SM, 0))
         self._fit_badge = V2Badge(h, "—", "neutral")
         self._fit_badge.pack(side="right")
 
-        kv_wrap = ctk.CTkFrame(card, fg_color="transparent")
-        kv_wrap.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
+        kv_wrap = ctk.CTkFrame(body, fg_color="transparent")
+        kv_wrap.pack(side="left", fill="x", expand=True)
         self._kv_cover = V2KV(kv_wrap, "Cover", "—")
         self._kv_cover.pack(fill="x", pady=2)
         self._kv_payload = V2KV(kv_wrap, "Payload", "—")
         self._kv_payload.pack(fill="x", pady=2)
         self._kv_output = V2KV(kv_wrap, "Output", "—")
         self._kv_output.pack(fill="x", pady=2)
+
+        ring_wrap = ctk.CTkFrame(body, fg_color="transparent",
+                                  width=100, height=100)
+        ring_wrap.pack(side="right", padx=(theme.PAD_MD, 0))
+        ring_wrap.pack_propagate(False)
+        self._cap_ring = CapacityRing(ring_wrap, accent=theme.AMBER)
+        self._cap_ring.SIZE = 96
+        self._cap_ring.configure(width=96, height=96)
+        self._cap_ring.pack()
+        self._cap_ring.set(0, 0)
         return card
 
     def _build_action_card(self, parent) -> V2Card:
@@ -222,7 +295,7 @@ class EncryptPanel(ctk.CTkFrame):
         try:
             info = get_image_info(path)
         except Exception as exc:
-            messagebox.showerror("Invalid image", str(exc))
+            themed_message(self, "Invalid image", str(exc), "error")
             return
         self._cover_path = path
         self._cover_info = info
@@ -353,6 +426,12 @@ class EncryptPanel(ctk.CTkFrame):
         elif self._stego_out:
             self._kv_output.set(os.path.basename(self._stego_out))
 
+        # Capacity ring
+        try:
+            self._cap_ring.set(enc, cap)
+        except Exception:
+            pass
+
         # Fit badge
         if cap and raw:
             pct = enc / cap * 100
@@ -371,6 +450,10 @@ class EncryptPanel(ctk.CTkFrame):
             self._mismatch.pack(fill="x", pady=(0, theme.PAD_SM))
         else:
             self._mismatch.pack_forget()
+
+        # Password strength pill
+        label, color = password_strength(self._pw_var.get())
+        self._pw_strength.configure(text=label, text_color=color)
 
         ok = bool(self._cover_path
                   and raw
@@ -430,6 +513,10 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out = None
         self._last_stage = 0  # 0=idle,1=kdf,2=cipher,3=mac,4=embed
         self._prog.reset()
+        try:
+            self._spinner.start()
+        except Exception:
+            pass
         self._refresh()
 
         self._log(f"▶ Begin encryption · {label}", "accent")
@@ -485,6 +572,10 @@ class EncryptPanel(ctk.CTkFrame):
         self._running = False
         self._complete = True
         self._prog.set(1.0, color=theme.OK)
+        try:
+            self._spinner.stop()
+        except Exception:
+            pass
         self._pending_image = stego_img
         self._narrate("Done · stego ready", "ok")
         self._log("✓ Embedded payload across R/G/B · stego ready", "ok")
@@ -518,9 +609,13 @@ class EncryptPanel(ctk.CTkFrame):
         self._running = False
         self._complete = False
         self._prog.reset()
+        try:
+            self._spinner.stop()
+        except Exception:
+            pass
         self._narrate(f"Encryption failed · {exc}", "crit")
         self._log(f"✗ Encryption failed · {exc}", "crit")
-        messagebox.showerror("Encryption failed", str(exc))
+        themed_message(self, "Encryption failed", str(exc), "error")
         self._refresh()
 
     def _export(self):
@@ -538,7 +633,7 @@ class EncryptPanel(ctk.CTkFrame):
         try:
             self._pending_image.save(path, "PNG")
         except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
+            themed_message(self, "Save failed", str(exc), "error")
             return
         self._stego_out = path
         self._kv_output.set(os.path.basename(path))

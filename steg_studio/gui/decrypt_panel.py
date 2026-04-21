@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import threading
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
 import customtkinter as ctk
 from PIL import Image as _PI
@@ -19,7 +19,9 @@ from steg_studio.core import check_magic, decode, get_image_info
 from . import theme
 from .assets import icon
 from .components import (
+    HexSpinner,
     ResultBox,
+    Tooltip,
     V2AudioResult,
     V2Badge,
     V2Button,
@@ -28,6 +30,7 @@ from .components import (
     V2KV,
     V2ProgressBar,
     show_toast,
+    themed_message,
 )
 from .workers import run_in_thread
 
@@ -70,6 +73,8 @@ class DecryptPanel(ctk.CTkFrame):
                                                      theme.PAD_SM))
         ctk.CTkLabel(head, text="Extract payload", font=theme.H3,
                      text_color=theme.TEXT_HI).pack(side="left")
+        self._spinner = HexSpinner(head, accent=theme.INFO)
+        self._spinner.pack(side="left", padx=(theme.PAD_SM, 0))
         self._status_badge = V2Badge(head, "READY", "neutral")
         self._status_badge.pack(side="right")
 
@@ -233,6 +238,10 @@ class DecryptPanel(ctk.CTkFrame):
         self._result = None
         self._last_stage = 0
         self._prog.reset()
+        try:
+            self._spinner.start()
+        except Exception:
+            pass
         self._status_badge.set("SCANNING LSB", "warn")
         self._result_box.show_idle()
         self._log(f"▶ Begin decryption · {os.path.basename(path)}", "accent")
@@ -270,6 +279,10 @@ class DecryptPanel(ctk.CTkFrame):
         self._running = False
         self._result = {"ok": True, "data": result}
         self._prog.set(1.0, color=theme.OK)
+        try:
+            self._spinner.stop()
+        except Exception:
+            pass
         self._status_badge.set("AUTHENTICATED", "ok")
         self._result_icon.configure(image=icon("check", 14, theme.OK))
 
@@ -335,6 +348,11 @@ class DecryptPanel(ctk.CTkFrame):
         self._running = False
         self._result = {"ok": False, "err": str(exc)}
         self._prog.set(1.0, color=theme.ERR)
+        try:
+            self._spinner.stop()
+        except Exception:
+            pass
+        themed_message(self, "Decryption failed", str(exc), "error")
         self._status_badge.set("HMAC FAILED", "crit")
         self._result_icon.configure(image=icon("warn", 14, theme.ERR))
         self._result_box.show_error(
@@ -376,4 +394,4 @@ class DecryptPanel(ctk.CTkFrame):
                         else data.encode("utf-8"))
             self._log(f"Payload saved → {path}", "ok")
         except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
+            themed_message(self, "Save failed", str(exc), "error")

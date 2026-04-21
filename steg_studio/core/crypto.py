@@ -1,7 +1,7 @@
 # steg_studio/core/crypto.py
 """
 Encryption helpers.
-Key derivation: PBKDF2-HMAC-SHA256 (100 000 iterations) → 32-byte key.
+Key derivation: PBKDF2-HMAC-SHA256 (480 000 iterations) → 32-byte key.
 Cipher: Fernet (AES-128-CBC + HMAC-SHA256) from the `cryptography` package.
 """
 import os
@@ -19,7 +19,7 @@ def derive_key(password: str, salt: bytes) -> bytes:
         "sha256",
         password.encode("utf-8"),
         salt,
-        iterations=100_000,
+        iterations=480_000,
         dklen=32,
     )
     return dk

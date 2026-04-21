@@ -214,6 +214,6 @@ def _bits_to_bytes(bits: list[int]) -> bytes:
     for i in range(0, len(bits), 8):
         chunk = bits[i:i + 8]
         if len(chunk) < 8:
-            break
+            raise ValueError("bit stream length not byte-aligned")
         out.append(_bits_to_int(chunk))
     return bytes(out)

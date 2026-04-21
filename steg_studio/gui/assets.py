@@ -131,6 +131,12 @@ def _eye(d, s, c):
     d.ellipse([3 * m, 3 * m + m // 2, 5 * m, 4 * m + m // 2 + m], fill=c)
 
 
+def _eye_off(d, s, c):
+    m = s // 8
+    d.ellipse([m, 3 * m, 7 * m, 5 * m], outline=c, width=max(1, m // 2))
+    d.line([m, 7 * m, 7 * m, m], fill=c, width=max(1, m // 2))
+
+
 def _embed(d, s, c):
     m = s // 8
     d.rounded_rectangle([m, 2 * m, 7 * m, 7 * m], radius=m // 2,
@@ -220,7 +226,8 @@ _MAP = {
     "text": _text, "mic": _mic, "play": _play, "stop": _stop,
     "record": _record, "save": _save, "chevron_r": _chevron_r,
     "hex": _hex, "warn": _warn, "clear": _clear, "check": _check,
-    "shield": _shield, "key": _key, "eye": _eye, "embed": _embed,
+    "shield": _shield, "key": _key, "eye": _eye, "eye_off": _eye_off,
+    "embed": _embed,
     "history": _history, "layers": _layers, "chart": _chart, "cpu": _cpu,
     "terminal": _terminal, "cog": _cog, "download": _download,
     "folder": _folder, "activity": _activity,

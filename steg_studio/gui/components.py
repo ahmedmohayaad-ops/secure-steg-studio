@@ -334,12 +334,17 @@ class HexSpinner(ctk.CTkLabel):
         self.configure(text_color=accent)
 
     def start(self):
+        if self._running:
+            return  # idempotent — prevents stacked after-loops
         self._running = True
         self._tick()
 
     def stop(self):
         self._running = False
-        self.configure(text="")
+        try:
+            self.configure(text="")
+        except Exception:
+            pass
 
     def _tick(self):
         if not self._running:
@@ -2565,3 +2570,186 @@ class ActivityLog(ctk.CTkFrame):
                 old.destroy()
             except Exception:
                 pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tooltip — lightweight hover hint
+# ═══════════════════════════════════════════════════════════════════════════
+
+class Tooltip:
+    """Attach a hover tooltip to any widget. Shows after a short delay.
+
+    Uses plain tk.Toplevel + tk.Label (not CTk) to keep hover/show/destroy
+    cycles lightweight on Windows — CTkToplevel was too heavy and could
+    stutter the UI on rapid hover.
+    """
+
+    _DELAY_MS = 500
+
+    def __init__(self, widget, text: str):
+        import tkinter as _tk
+        self._tk = _tk
+        self._w = widget
+        self._text = text
+        self._tip = None
+        self._after: str | None = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+        widget.bind("<Destroy>", self._on_leave, add="+")
+
+    def set(self, text: str):
+        self._text = text
+
+    def _on_enter(self, _e=None):
+        self._cancel()
+        try:
+            self._after = self._w.after(self._DELAY_MS, self._show)
+        except Exception:
+            self._after = None
+
+    def _on_leave(self, _e=None):
+        self._cancel()
+        self._hide()
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self._w.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self):
+        if self._tip is not None or not self._text:
+            return
+        try:
+            tip = self._tk.Toplevel(self._w)
+            tip.wm_overrideredirect(True)
+            tip.configure(bg=theme.STROKE_HI)
+            lbl = self._tk.Label(
+                tip, text=self._text, justify="left",
+                bg=theme.BG_0, fg=theme.TEXT_HI,
+                font=(theme.FONT_FAMILY, 9),
+                padx=8, pady=4, bd=0)
+            lbl.pack(padx=1, pady=1)
+            x = self._w.winfo_rootx() + 8
+            y = self._w.winfo_rooty() + self._w.winfo_height() + 4
+            tip.wm_geometry(f"+{x}+{y}")
+            self._tip = tip
+        except Exception:
+            self._tip = None
+
+    def _hide(self):
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ThemedDialog — replaces tkinter.messagebox with palette-consistent modal
+# ═══════════════════════════════════════════════════════════════════════════
+
+def themed_message(parent, title: str, message: str,
+                   kind: str = "error") -> None:
+    """Show a modal dialog styled with the app palette.
+
+    kind: "error" | "warn" | "info" | "ok"
+    """
+    tones = {
+        "error": (theme.ERR, "warn"),
+        "warn": (theme.WARN, "warn"),
+        "info": (theme.INFO, "shield"),
+        "ok": (theme.OK, "check"),
+    }
+    color, icon_name = tones.get(kind, tones["info"])
+
+    try:
+        root = parent.winfo_toplevel()
+    except Exception:
+        root = parent
+
+    dlg = ctk.CTkToplevel(root)
+    dlg.title(title)
+    dlg.configure(fg_color=theme.BG_1)
+    dlg.resizable(False, False)
+    try:
+        dlg.transient(root)
+    except Exception:
+        pass
+
+    frame = ctk.CTkFrame(dlg, fg_color=theme.BG_2,
+                         border_width=1, border_color=theme.STROKE_HI,
+                         corner_radius=theme.RADIUS_MD)
+    frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+    head = ctk.CTkFrame(frame, fg_color="transparent")
+    head.pack(fill="x", padx=theme.PAD_MD, pady=(theme.PAD_MD, theme.PAD_SM))
+    ctk.CTkLabel(head, text="", image=icon(icon_name, 18, color),
+                 width=22).pack(side="left", padx=(0, theme.PAD_SM))
+    ctk.CTkLabel(head, text=title, font=theme.H3,
+                 text_color=theme.TEXT_HI, anchor="w").pack(side="left")
+
+    ctk.CTkLabel(frame, text=message, font=theme.BODY,
+                 text_color=theme.TEXT_MID, wraplength=420,
+                 justify="left", anchor="w").pack(
+        fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
+
+    btn_row = ctk.CTkFrame(frame, fg_color="transparent")
+    btn_row.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
+    ok_btn = ctk.CTkButton(
+        btn_row, text="OK", width=90, height=32,
+        fg_color=color, hover_color=theme.BG_4,
+        text_color=theme.BG_0, font=theme.F_BTN,
+        corner_radius=theme.RADIUS_SM,
+        command=dlg.destroy)
+    ok_btn.pack(side="right")
+
+    # Size and center over parent
+    dlg.update_idletasks()
+    w = max(380, dlg.winfo_reqwidth())
+    h = max(150, dlg.winfo_reqheight())
+    try:
+        rx = root.winfo_rootx() + root.winfo_width() // 2 - w // 2
+        ry = root.winfo_rooty() + root.winfo_height() // 2 - h // 2
+        dlg.geometry(f"{w}x{h}+{max(rx, 0)}+{max(ry, 0)}")
+    except Exception:
+        dlg.geometry(f"{w}x{h}")
+
+    try:
+        dlg.grab_set()
+    except Exception:
+        pass
+    dlg.bind("<Return>", lambda _e: dlg.destroy())
+    dlg.bind("<Escape>", lambda _e: dlg.destroy())
+    ok_btn.focus_set()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# password_strength — weak/ok/strong classifier
+# ═══════════════════════════════════════════════════════════════════════════
+
+def password_strength(pw: str) -> tuple[str, str]:
+    """Return (label, color_token) for a passphrase."""
+    if not pw:
+        return ("—", theme.TEXT_DIM)
+    classes = 0
+    if any(c.islower() for c in pw):
+        classes += 1
+    if any(c.isupper() for c in pw):
+        classes += 1
+    if any(c.isdigit() for c in pw):
+        classes += 1
+    if any(not c.isalnum() for c in pw):
+        classes += 1
+    score = len(pw) + 2 * classes
+    if len(pw) < 6:
+        return ("Too short", theme.ERR)
+    if score >= 20 and classes >= 3:
+        return ("Strong", theme.OK)
+    if score >= 14 and classes >= 2:
+        return ("OK", theme.WARN)
+    return ("Weak", theme.ERR)
