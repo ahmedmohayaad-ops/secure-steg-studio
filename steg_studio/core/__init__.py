@@ -8,3 +8,4 @@ from .image_info   import get_image_info, estimate_encrypted_size   # noqa: F401
 from .encoder      import encode_text, encode_file, encode_audio     # noqa: F401
 from .decoder      import decode                                      # noqa: F401
 from .decoder      import check_magic                                # noqa: F401
+from .analysis     import chi_square_score, SUSPICIOUS_THRESHOLD     # noqa: F401

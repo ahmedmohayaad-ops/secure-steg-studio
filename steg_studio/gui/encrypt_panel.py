@@ -7,6 +7,7 @@ action card. Forensic dashboards live in the Inspector tab.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import os
 from tkinter import filedialog
 
@@ -16,6 +17,7 @@ from PIL import Image as _PI
 from steg_studio.core import (
     check_magic, encode_text, encode_file, encode_audio,
     get_image_info, estimate_encrypted_size,
+    chi_square_score, SUSPICIOUS_THRESHOLD,
 )
 
 from . import theme
@@ -37,6 +39,72 @@ from .components import (
     themed_message,
 )
 from .workers import run_in_thread
+
+
+def _estimate_bits(pw: str) -> float:
+    pool = 0
+    if any(c.islower() for c in pw): pool += 26
+    if any(c.isupper() for c in pw): pool += 26
+    if any(c.isdigit() for c in pw): pool += 10
+    if any(not c.isalnum() for c in pw): pool += 32
+    return len(pw) * math.log2(pool) if pool else 0.0
+
+
+def _entropy_band(bits: float) -> tuple[str, str]:
+    if bits < 28:   return ("weak",      "#FF4C4C")
+    if bits < 60:   return ("fair",      "#FFD600")
+    if bits < 80:   return ("strong",    "#00C9A7")
+    return            ("excellent", "#4ADE80")
+
+
+class EntropyBar(ctk.CTkFrame):
+    """4px horizontal track with linearly-animated fill. No easing."""
+    _STEP_PX = 6  # pixels moved per 16ms tick
+
+    def __init__(self, master, **kwargs):
+        kwargs.setdefault("fg_color", theme.BG_3)
+        kwargs.setdefault("height", 4)
+        kwargs.setdefault("corner_radius", 2)
+        super().__init__(master, **kwargs)
+        self.pack_propagate(False)
+        self._fill = ctk.CTkFrame(
+            self, fg_color="#FF4C4C", corner_radius=2,
+            width=0, height=4)
+        self._fill.place(x=0, y=0)
+        self._track_w = 1
+        self._target_px = 0
+        self._current_px = 0
+        self._tick_id: str | None = None
+        self.bind("<Configure>", self._on_resize)
+
+    def _on_resize(self, ev):
+        self._track_w = max(1, ev.width)
+        self._fill.configure(height=max(1, ev.height))
+
+    def set(self, ratio: float, color: str):
+        ratio = max(0.0, min(1.0, ratio))
+        self._fill.configure(fg_color=color)
+        self._target_px = int(self._track_w * ratio)
+        if self._tick_id is None:
+            self._tick()
+
+    def _tick(self):
+        self._tick_id = None
+        if self._current_px == self._target_px:
+            return
+        if self._current_px < self._target_px:
+            self._current_px = min(
+                self._target_px, self._current_px + self._STEP_PX)
+        else:
+            self._current_px = max(
+                self._target_px, self._current_px - self._STEP_PX)
+        if self._current_px <= 0:
+            self._fill.place_forget()
+        else:
+            self._fill.configure(width=self._current_px)
+            if not self._fill.winfo_ismapped():
+                self._fill.place(x=0, y=0)
+        self._tick_id = self.after(16, self._tick)
 
 
 class EncryptPanel(ctk.CTkFrame):
@@ -193,20 +261,17 @@ class EncryptPanel(ctk.CTkFrame):
         self._pw2_eye.pack(side="left", padx=(6, 0))
         Tooltip(self._pw2_eye, "Show/hide confirmation")
 
-        # Strength pill row
+        # Entropy bar + mono caption
         strength_row = ctk.CTkFrame(card, fg_color="transparent")
         strength_row.pack(fill="x", padx=theme.PAD_MD,
                           pady=(0, theme.PAD_MD))
-        ctk.CTkLabel(strength_row, text="STRENGTH",
-                     font=theme.LABEL, text_color=theme.TEXT_DIM
-                     ).pack(side="left")
-        self._pw_strength = ctk.CTkLabel(
-            strength_row, text="—",
-            font=(theme.FONT_FAMILY, 10, "bold"),
-            text_color=theme.TEXT_DIM,
-            fg_color=theme.BG_3, corner_radius=6,
-            width=80, height=20)
-        self._pw_strength.pack(side="left", padx=theme.PAD_SM)
+        self._pw_entropy = EntropyBar(strength_row)
+        self._pw_entropy.pack(side="left", fill="x", expand=True)
+        self._pw_entropy_caption = ctk.CTkLabel(
+            strength_row, text="entropy:    0 bits",
+            font=theme.MONO, text_color=theme.TEXT_DIM, anchor="e")
+        self._pw_entropy_caption.pack(
+            side="left", padx=(theme.PAD_SM, 0))
 
         return card
 
@@ -256,6 +321,43 @@ class EncryptPanel(ctk.CTkFrame):
         self._cap_ring.configure(width=96, height=96)
         self._cap_ring.pack()
         self._cap_ring.set(0, 0)
+
+        # ── Detectability section (populated after a successful embed) ────
+        self._det_section = ctk.CTkFrame(card, fg_color="transparent")
+        # NB: not packed yet — appears once we have a stego score.
+        det_title = ctk.CTkFrame(self._det_section, fg_color="transparent")
+        det_title.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_XS))
+        det_label = ctk.CTkLabel(det_title, text="DETECTABILITY",
+                                 font=theme.LABEL,
+                                 text_color=theme.TEXT_DIM)
+        det_label.pack(side="left")
+        Tooltip(det_label,
+                "Chi-square LSB-pairs test "
+                "(Westfeld & Pfitzmann, 1999). "
+                "Score < 3.5 ≈ undetectable to common stego scanners.")
+        self._det_pill = V2Badge(det_title, "—", "neutral")
+        self._det_pill.pack(side="right")
+
+        det_row = ctk.CTkFrame(self._det_section, fg_color="transparent")
+        det_row.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_XS))
+        self._det_bar = ctk.CTkFrame(det_row, fg_color=theme.BG_3,
+                                      width=80, height=4,
+                                      corner_radius=2)
+        self._det_bar.pack(side="left", padx=(0, theme.PAD_SM))
+        self._det_bar.pack_propagate(False)
+        self._det_fill = ctk.CTkFrame(self._det_bar, fg_color=theme.OK,
+                                       corner_radius=2,
+                                       width=1, height=4)
+        self._det_score = ctk.CTkLabel(det_row, text="—",
+                                        font=theme.MONO,
+                                        text_color=theme.TEXT_HI)
+        self._det_score.pack(side="left")
+
+        self._det_compare = ctk.CTkLabel(
+            self._det_section, text="", font=theme.MONO_SM,
+            text_color=theme.TEXT_LO, justify="left", anchor="w")
+        self._det_compare.pack(fill="x", padx=theme.PAD_MD,
+                               pady=(0, theme.PAD_MD))
         return card
 
     def _build_action_card(self, parent) -> V2Card:
@@ -291,7 +393,16 @@ class EncryptPanel(ctk.CTkFrame):
         return card
 
     # ── handlers ──────────────────────────────────────────────────────────
+    _LOSSLESS_EXTS = {".png", ".bmp", ".tiff", ".tif"}
+
     def _on_cover(self, path: str):
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in self._LOSSLESS_EXTS:
+            themed_message(
+                self, "Unsupported Format",
+                "Lossy formats (JPEG, WebP) destroy hidden data. "
+                "Use PNG, BMP, or TIFF.", "error")
+            return
         try:
             info = get_image_info(path)
         except Exception as exc:
@@ -451,9 +562,22 @@ class EncryptPanel(ctk.CTkFrame):
         else:
             self._mismatch.pack_forget()
 
-        # Password strength pill
-        label, color = password_strength(self._pw_var.get())
-        self._pw_strength.configure(text=label, text_color=color)
+        # Passphrase entropy bar
+        pw = self._pw_var.get()
+        bits = _estimate_bits(pw)
+        # Cap ratio at 128 bits — anything past that already pegs "excellent"
+        ratio = min(bits / 128.0, 1.0) if bits else 0.0
+        if pw:
+            band, color = _entropy_band(bits)
+            self._pw_entropy.set(ratio, color)
+            self._pw_entropy_caption.configure(
+                text=f"entropy: {int(bits):>4d} bits · {band}",
+                text_color=color)
+        else:
+            self._pw_entropy.set(0.0, "#FF4C4C")
+            self._pw_entropy_caption.configure(
+                text="entropy:    0 bits",
+                text_color=theme.TEXT_DIM)
 
         ok = bool(self._cover_path
                   and raw
@@ -586,6 +710,58 @@ class EncryptPanel(ctk.CTkFrame):
         # Push state to Inspector tab.
         self._push_inspector(stego_img)
         self._refresh()
+        # χ² detectability — runs on a worker so the UI stays responsive.
+        self._run_detectability(stego_img)
+
+    def _run_detectability(self, stego_img):
+        cover_img = self._cover_img
+        if cover_img is None:
+            return
+
+        def work(progress_callback=None):
+            return (chi_square_score(cover_img),
+                    chi_square_score(stego_img))
+
+        run_in_thread(self, work,
+                      on_done=self._on_detectability,
+                      on_error=lambda exc: self._log(
+                          f"χ² scoring skipped · {exc}", "warn"))
+
+    def _on_detectability(self, scores):
+        cover_res, stego_res = scores
+        c_score = cover_res["score"]
+        s_score = stego_res["score"]
+        verdict = stego_res["verdict"]
+
+        # Bar fill: score / 10, teal track. Width capped at 80px (track width).
+        ratio = max(0.0, min(1.0, s_score / 10.0))
+        target_w = max(1, int(80 * ratio))
+        self._det_fill.configure(
+            fg_color=theme.OK if verdict == "PASS" else theme.WARN,
+            width=target_w)
+        if not self._det_fill.winfo_ismapped():
+            self._det_fill.place(x=0, y=0)
+
+        self._det_score.configure(text=f"  {s_score:4.1f} / 10")
+        if verdict == "PASS":
+            self._det_pill.set("✓ PASS", "ok")
+        else:
+            self._det_pill.set("⚠ SUSPICIOUS", "warn")
+
+        delta = s_score - c_score
+        sign = "+" if delta >= 0 else ""
+        self._det_compare.configure(
+            text=(f"COVER  : {c_score:4.1f} / 10\n"
+                  f"STEGO  : {s_score:4.1f} / 10  (Δ {sign}{delta:.1f})"))
+
+        # Show the section (idempotent).
+        if not self._det_section.winfo_ismapped():
+            self._det_section.pack(fill="x", pady=(theme.PAD_SM, 0))
+
+        self._log(
+            f"χ² detectability · cover {c_score:.1f} · stego {s_score:.1f} "
+            f"({verdict})",
+            "ok" if verdict == "PASS" else "warn")
 
     def _push_inspector(self, stego_img):
         if self._cover_img is None:
@@ -649,5 +825,7 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out = None
         self._pending_image = None
         self._prog.reset()
+        if self._det_section.winfo_ismapped():
+            self._det_section.pack_forget()
         self._push_preview()
         self._refresh()
