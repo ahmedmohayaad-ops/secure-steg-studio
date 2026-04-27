@@ -393,15 +393,17 @@ class EncryptPanel(ctk.CTkFrame):
         return card
 
     # ── handlers ──────────────────────────────────────────────────────────
-    _LOSSLESS_EXTS = {".png", ".bmp", ".tiff", ".tif"}
+    _SUPPORTED_EXTS = {".png", ".bmp", ".tiff", ".tif", ".jpg", ".jpeg"}
+    _LOSSY_EXTS = {".jpg", ".jpeg"}
 
     def _on_cover(self, path: str):
         ext = os.path.splitext(path)[1].lower()
-        if ext not in self._LOSSLESS_EXTS:
+        if ext not in self._SUPPORTED_EXTS:
             themed_message(
                 self, "Unsupported Format",
-                "Lossy formats (JPEG, WebP) destroy hidden data. "
-                "Use PNG, BMP, or TIFF.", "error")
+                "Use PNG, BMP, TIFF, or JPEG. "
+                "(JPEG is decoded to pixels; the stego output is saved as PNG.)",
+                "error")
             return
         try:
             info = get_image_info(path)
@@ -424,6 +426,9 @@ class EncryptPanel(ctk.CTkFrame):
         self._log(f"Cover loaded · {os.path.basename(path)} · "
                   f"{theme.fmt_bytes(info['capacity_bytes'])} capacity",
                   "info")
+        if ext in self._LOSSY_EXTS:
+            self._log("JPEG cover · output stego will be saved as PNG "
+                      "(JPEG would destroy the hidden bits).", "warn")
         try:
             encrypted = check_magic(path)
         except Exception:

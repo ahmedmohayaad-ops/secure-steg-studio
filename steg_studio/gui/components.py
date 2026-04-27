@@ -190,8 +190,9 @@ class DropZone(ctk.CTkFrame):
         from tkinter import filedialog
         path = filedialog.askopenfilename(
             title="Select image",
-            filetypes=[("PNG images", "*.png"),
-                       ("Images", "*.png *.bmp *.tif *.tiff"),
+            filetypes=[("Images", "*.png *.bmp *.tif *.tiff *.jpg *.jpeg"),
+                       ("PNG images", "*.png"),
+                       ("JPEG", "*.jpg *.jpeg"),
                        ("All files", "*.*")],
         )
         if path:
@@ -896,7 +897,9 @@ class V2DropZone(ctk.CTkFrame):
         if self._kind == "image":
             path = filedialog.askopenfilename(
                 title="Select image",
-                filetypes=[("PNG/BMP/TIFF", "*.png *.bmp *.tif *.tiff"),
+                filetypes=[("Images", "*.png *.bmp *.tif *.tiff *.jpg *.jpeg"),
+                           ("PNG/BMP/TIFF", "*.png *.bmp *.tif *.tiff"),
+                           ("JPEG", "*.jpg *.jpeg"),
                            ("All files", "*.*")])
         else:
             path = filedialog.askopenfilename(title="Select payload file")
@@ -1928,10 +1931,10 @@ class ResultBox(ctk.CTkFrame):
     def show_text(self, text: str):
         self._clear()
         self._inner = ctk.CTkTextbox(
-            self, fg_color="#07080A",
+            self, fg_color=theme.BG_4,
             text_color=theme.TEXT_HI,
             font=("JetBrains Mono", 11),
-            border_width=1, border_color="#1E5C38",
+            border_width=1, border_color=theme.OK,
             corner_radius=6, height=160)
         self._inner.pack(fill="both", expand=True, padx=14, pady=14)
         self._inner.insert("1.0", text)
