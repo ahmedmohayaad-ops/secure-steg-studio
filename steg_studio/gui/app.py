@@ -8,7 +8,7 @@ Layout:
   │  TopBar      · eyebrow + title + segmented + actions         │
   ├──┬───────────────────────────────────────────────────────────┤
   │R │  Workspace                                                │
-  │a │  (encrypt | decrypt — each has 1fr workspace + inspector) │
+  │a │  (encrypt | decrypt)                                      │
   │i ├───────────────────────────────────────────────────────────┤
   │l │  Event log drawer (collapsible)                           │
   ├──┴───────────────────────────────────────────────────────────┤
@@ -21,7 +21,7 @@ import customtkinter as ctk
 
 from . import prefs, theme
 from .assets import icon
-from .components import V2Badge, V2Segmented, ConsoleLog, Tooltip, session_id
+from .components import V2Badge, V2Segmented, ConsoleLog, Tooltip
 
 try:
     import psutil
@@ -31,7 +31,6 @@ except Exception:  # noqa: BLE001
     _PSUTIL_OK = False
 from .encrypt_panel import EncryptPanel
 from .decrypt_panel import DecryptPanel
-from .inspector_panel import InspectorPanel
 
 
 APP_NAME = "Steg Studio — Forensic Steganography Workstation"
@@ -105,7 +104,6 @@ class App(ctk.CTk):
         # Boot log
         self._log.add("steg-studio/core v2.1.0 · py · cryptography backend OpenSSL", "info")
         self._log.add("Cryptography: Fernet (AES-128-CBC + HMAC-SHA256) · PBKDF2-HMAC-SHA256 480K iters", "info")
-        self._log.add(f"Session initialised · session#{session_id()}", "ok")
 
     def _build_titlebar(self):
         bar = ctk.CTkFrame(self, fg_color=theme.BG_0, height=40,
@@ -133,15 +131,6 @@ class App(ctk.CTk):
                       font=("Segoe UI", 12, "bold"),
                       text_color=theme.TEXT_MID
                       ).pack(side="left")
-        ctk.CTkLabel(center, text="·",
-                      font=("JetBrains Mono", 11),
-                      text_color=theme.TEXT_DIM
-                      ).pack(side="left", padx=8)
-        ctk.CTkLabel(center,
-                      text=f"session {session_id()} · workspace",
-                      font=("JetBrains Mono", 10),
-                      text_color=theme.TEXT_LO
-                      ).pack(side="left")
 
         ctk.CTkLabel(bar, text="v2.1.0",
                       font=("JetBrains Mono", 10),
@@ -156,7 +145,7 @@ class App(ctk.CTk):
 
         # Eyebrow + big title (left)
         left = ctk.CTkFrame(bar, fg_color="transparent")
-        left.pack(side="left", padx=20, pady=12)
+        left.pack(side="left", padx=20, pady=8)
         self._eyebrow = ctk.CTkLabel(left,
                                        text="EMBED / ENCRYPT",
                                        font=("Segoe UI", 9, "bold"),
@@ -172,9 +161,9 @@ class App(ctk.CTk):
         right = ctk.CTkFrame(bar, fg_color="transparent")
         right.pack(side="right", padx=20, pady=12)
 
-        self._seg = V2Segmented(right, ["Encrypt", "Decrypt", "Inspect"],
+        self._seg = V2Segmented(right, ["Encrypt", "Decrypt"],
                                   on_change=lambda v: self._switch(v.lower()),
-                                  icons=["lock", "unlock", "chart"])
+                                  icons=["lock", "unlock"])
         self._seg.pack(side="left")
 
         # Dark / Light toggle
@@ -194,7 +183,6 @@ class App(ctk.CTk):
         items = [
             ("encrypt", "lock", "Encrypt  (Ctrl+1)"),
             ("decrypt", "unlock", "Decrypt  (Ctrl+2)"),
-            ("inspect", "chart", "Inspect  (Ctrl+3)"),
         ]
         self._rail_btns: dict[str, ctk.CTkButton] = {}
         for key, ic, tip in items:
@@ -300,7 +288,7 @@ class App(ctk.CTk):
         chunk("LSB · 1-bit · G-channel primary")
 
         # Right side: version + live metrics (if psutil)
-        ctk.CTkLabel(bar, text=f"v2.1.0 · session {session_id()}",
+        ctk.CTkLabel(bar, text="v2.1.0",
                      font=("JetBrains Mono", 10),
                      text_color=theme.AMBER).pack(side="right", padx=8)
         if _PSUTIL_OK:
@@ -320,23 +308,20 @@ class App(ctk.CTk):
             self._workspace,
             log=self._log_event,
             on_status=lambda *_: None,
-            on_inspect=self._set_inspector,
         )
         self._decrypt = DecryptPanel(
             self._workspace,
             log=self._log_event,
             on_status=lambda *_: None,
-            on_inspect=self._set_inspector,
         )
-        self._inspect = InspectorPanel(self._workspace)
         self._encrypt.pack(fill="both", expand=True)
         self._current = self._encrypt
 
     # ── view switching ───────────────────────────────────────────────────────
     def _switch(self, mode: str):
-        if mode == self._mode:
+        if mode not in ("encrypt", "decrypt") or mode == self._mode:
             return
-        for panel in (self._encrypt, self._decrypt, self._inspect):
+        for panel in (self._encrypt, self._decrypt):
             panel.pack_forget()
         self._mode = mode
         if mode == "encrypt":
@@ -346,43 +331,14 @@ class App(ctk.CTk):
             self._encrypt.pack(fill="both", expand=True)
             self._current = self._encrypt
             self._seg.set("Encrypt")
-        elif mode == "decrypt":
+        else:
             self._eyebrow.configure(text="EXTRACT / DECRYPT")
             self._title.configure(
                 text="Recover and verify a payload from a stego image")
             self._decrypt.pack(fill="both", expand=True)
             self._current = self._decrypt
             self._seg.set("Decrypt")
-        else:  # inspect
-            self._eyebrow.configure(text="FORENSIC INSPECTOR")
-            self._title.configure(
-                text="Trace of the most recent operation")
-            self._inspect.pack(fill="both", expand=True)
-            self._current = self._inspect
-            self._seg.set("Inspect")
         self._sync_rail()
-
-    def _set_inspector(self, state: dict):
-        try:
-            kind = state.get("kind")
-            if kind == "narrate":
-                self._inspect.narrate(state.get("msg", ""),
-                                      state.get("tone", "info"))
-                return
-            if kind == "reset_narration":
-                self._inspect.reset_narration()
-                return
-            if kind == "update_capacity":
-                self._inspect.update_capacity(state)
-                return
-            if state.get("preview"):
-                self._inspect.set_preview_state(state)
-                return
-            self._inspect.set_state(state)
-            self._log_event(
-                f"Inspector updated · {state.get('label','')}", "info")
-        except Exception as exc:
-            self._log_event(f"Inspector update failed · {exc}", "crit")
 
     def _toggle_theme(self, mode: str):
         if mode not in ("dark", "light"):
@@ -411,7 +367,7 @@ class App(ctk.CTk):
         self._build()
 
     def _sync_rail(self):
-        for key in ("encrypt", "decrypt", "inspect"):
+        for key in ("encrypt", "decrypt"):
             b = self._rail_btns[key]
             ic = self._rail_btns[key + "_icon"]  # type: ignore
             active = key == self._mode
@@ -465,7 +421,6 @@ class App(ctk.CTk):
         # caused double-fires under Caps Lock.
         self.bind("<Control-Key-1>", lambda _e: self._switch("encrypt"))
         self.bind("<Control-Key-2>", lambda _e: self._switch("decrypt"))
-        self.bind("<Control-Key-3>", lambda _e: self._switch("inspect"))
         self.bind("<Control-Key-l>", lambda _e: self._toggle_console())
         self.bind("<Control-Key-t>",
                   lambda _e: self._toggle_theme(

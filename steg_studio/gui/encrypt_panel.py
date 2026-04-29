@@ -1,12 +1,10 @@
 # steg_studio/gui/encrypt_panel.py
 """Simplified Encrypt workspace.
 
-Single column: inputs → BytePeek (1-pixel before/after) → summary →
-action card. Forensic dashboards live in the Inspector tab.
+Single column: inputs → summary → action card.
 """
 from __future__ import annotations
 
-import datetime as _dt
 import math
 import os
 from tkinter import filedialog
@@ -17,13 +15,13 @@ from PIL import Image as _PI
 from steg_studio.core import (
     check_magic, encode_text, encode_file, encode_audio,
     get_image_info, estimate_encrypted_size,
-    chi_square_score, SUSPICIOUS_THRESHOLD,
 )
 
 from . import theme
 from .assets import icon
 from .components import (
     CapacityRing,
+    CoverPreview,
     HexSpinner,
     Tooltip,
     V2Badge,
@@ -108,13 +106,11 @@ class EntropyBar(ctk.CTkFrame):
 
 
 class EncryptPanel(ctk.CTkFrame):
-    def __init__(self, master, *, log=None, on_status=None,
-                 on_inspect=None, **kwargs):
+    def __init__(self, master, *, log=None, on_status=None, **kwargs):
         kwargs.setdefault("fg_color", theme.BG_1)
         super().__init__(master, **kwargs)
         self._log = log or (lambda *_a, **_k: None)
         self._on_status = on_status or (lambda *_a, **_k: None)
-        self._on_inspect = on_inspect or (lambda _state: None)
 
         self._cover_path: str | None = None
         self._cover_info: dict | None = None
@@ -127,7 +123,6 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out: str | None = None
         self._pending_image: _PI.Image | None = None
         self._sample_xy: tuple[int, int] | None = None
-        self._last_preview_size: int = -1
 
         self._build()
         self._refresh()
@@ -142,6 +137,8 @@ class EncryptPanel(ctk.CTkFrame):
 
         self._build_inputs_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(theme.PAD_LG, theme.PAD_MD))
+        self._build_preview_card(wrap).pack(
+            fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_MD))
         self._build_summary_card(wrap).pack(
             fill="x", padx=theme.PAD_LG, pady=(0, theme.PAD_MD))
         self._build_action_card(wrap).pack(
@@ -200,21 +197,16 @@ class EncryptPanel(ctk.CTkFrame):
             c2, on_change=lambda _b: self._refresh(),
             accent=theme.AMBER)
 
-        # Passwords row
+        # Passphrase row
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
-        row2.grid_columnconfigure(0, weight=1, uniform="r2")
-        row2.grid_columnconfigure(1, weight=1, uniform="r2")
 
         self._pw_var = ctk.StringVar()
         self._pw_var.trace_add("write", lambda *_: self._refresh())
-        self._pw2_var = ctk.StringVar()
-        self._pw2_var.trace_add("write", lambda *_: self._refresh())
         self._pw_shown = False
-        self._pw2_shown = False
 
         p1 = ctk.CTkFrame(row2, fg_color="transparent")
-        p1.grid(row=0, column=0, sticky="ew", padx=(0, theme.PAD_SM))
+        p1.pack(fill="x")
         ctk.CTkLabel(p1, text="PASSPHRASE", font=theme.LABEL,
                      text_color=theme.TEXT_DIM, anchor="w").pack(
             anchor="w", pady=(0, theme.PAD_XS))
@@ -237,30 +229,6 @@ class EncryptPanel(ctk.CTkFrame):
         self._pw_eye.pack(side="left", padx=(6, 0))
         Tooltip(self._pw_eye, "Show/hide passphrase")
 
-        p2 = ctk.CTkFrame(row2, fg_color="transparent")
-        p2.grid(row=0, column=1, sticky="ew", padx=(theme.PAD_SM, 0))
-        ctk.CTkLabel(p2, text="CONFIRM", font=theme.LABEL,
-                     text_color=theme.TEXT_DIM, anchor="w").pack(
-            anchor="w", pady=(0, theme.PAD_XS))
-        pw2_wrap = ctk.CTkFrame(p2, fg_color="transparent")
-        pw2_wrap.pack(fill="x")
-        self._pw2 = ctk.CTkEntry(
-            pw2_wrap, textvariable=self._pw2_var, show="●", height=36,
-            fg_color=theme.BG_4, border_color=theme.STROKE_HI,
-            border_width=1, text_color=theme.TEXT_HI,
-            font=theme.MONO, placeholder_text="re-enter",
-            corner_radius=theme.RADIUS_SM)
-        self._pw2.pack(side="left", fill="x", expand=True)
-        self._pw2_eye = ctk.CTkButton(
-            pw2_wrap, text="", width=34, height=36,
-            image=icon("eye", 16, theme.TEXT_LO),
-            fg_color=theme.BG_4, hover_color=theme.BG_5,
-            corner_radius=theme.RADIUS_SM, border_width=1,
-            border_color=theme.STROKE_HI,
-            command=lambda: self._toggle_pw_show(2))
-        self._pw2_eye.pack(side="left", padx=(6, 0))
-        Tooltip(self._pw2_eye, "Show/hide confirmation")
-
         # Entropy bar + mono caption
         strength_row = ctk.CTkFrame(card, fg_color="transparent")
         strength_row.pack(fill="x", padx=theme.PAD_MD,
@@ -276,18 +244,23 @@ class EncryptPanel(ctk.CTkFrame):
         return card
 
     def _toggle_pw_show(self, which: int):
-        if which == 1:
-            self._pw_shown = not self._pw_shown
-            self._pw.configure(show="" if self._pw_shown else "●")
-            self._pw_eye.configure(
-                image=icon("eye_off" if self._pw_shown else "eye",
-                           16, theme.AMBER if self._pw_shown else theme.TEXT_LO))
-        else:
-            self._pw2_shown = not self._pw2_shown
-            self._pw2.configure(show="" if self._pw2_shown else "●")
-            self._pw2_eye.configure(
-                image=icon("eye_off" if self._pw2_shown else "eye",
-                           16, theme.AMBER if self._pw2_shown else theme.TEXT_LO))
+        self._pw_shown = not self._pw_shown
+        self._pw.configure(show="" if self._pw_shown else "●")
+        self._pw_eye.configure(
+            image=icon("eye_off" if self._pw_shown else "eye",
+                       16, theme.AMBER if self._pw_shown else theme.TEXT_LO))
+
+    def _build_preview_card(self, parent) -> V2Card:
+        card = V2Card(parent)
+        h = ctk.CTkFrame(card, fg_color="transparent")
+        h.pack(fill="x", padx=theme.PAD_MD, pady=(theme.PAD_MD, theme.PAD_SM))
+        ctk.CTkLabel(h, text="Cover preview", font=theme.H3,
+                     text_color=theme.TEXT_HI).pack(side="left")
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_MD))
+        self._cover_preview = CoverPreview(body, accent=theme.AMBER)
+        self._cover_preview.pack(fill="x")
+        return card
 
     def _build_summary_card(self, parent) -> V2Card:
         card = V2Card(parent)
@@ -322,60 +295,12 @@ class EncryptPanel(ctk.CTkFrame):
         self._cap_ring.pack()
         self._cap_ring.set(0, 0)
 
-        # ── Detectability section (populated after a successful embed) ────
-        self._det_section = ctk.CTkFrame(card, fg_color="transparent")
-        # NB: not packed yet — appears once we have a stego score.
-        det_title = ctk.CTkFrame(self._det_section, fg_color="transparent")
-        det_title.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_XS))
-        det_label = ctk.CTkLabel(det_title, text="DETECTABILITY",
-                                 font=theme.LABEL,
-                                 text_color=theme.TEXT_DIM)
-        det_label.pack(side="left")
-        Tooltip(det_label,
-                "Chi-square LSB-pairs test "
-                "(Westfeld & Pfitzmann, 1999). "
-                "Score < 3.5 ≈ undetectable to common stego scanners.")
-        self._det_pill = V2Badge(det_title, "—", "neutral")
-        self._det_pill.pack(side="right")
-
-        det_row = ctk.CTkFrame(self._det_section, fg_color="transparent")
-        det_row.pack(fill="x", padx=theme.PAD_MD, pady=(0, theme.PAD_XS))
-        self._det_bar = ctk.CTkFrame(det_row, fg_color=theme.BG_3,
-                                      width=80, height=4,
-                                      corner_radius=2)
-        self._det_bar.pack(side="left", padx=(0, theme.PAD_SM))
-        self._det_bar.pack_propagate(False)
-        self._det_fill = ctk.CTkFrame(self._det_bar, fg_color=theme.OK,
-                                       corner_radius=2,
-                                       width=1, height=4)
-        self._det_score = ctk.CTkLabel(det_row, text="—",
-                                        font=theme.MONO,
-                                        text_color=theme.TEXT_HI)
-        self._det_score.pack(side="left")
-
-        self._det_compare = ctk.CTkLabel(
-            self._det_section, text="", font=theme.MONO_SM,
-            text_color=theme.TEXT_LO, justify="left", anchor="w")
-        self._det_compare.pack(fill="x", padx=theme.PAD_MD,
-                               pady=(0, theme.PAD_MD))
         return card
 
     def _build_action_card(self, parent) -> V2Card:
         card = V2Card(parent, fg_color=theme.BG_3)
         wrap = ctk.CTkFrame(card, fg_color="transparent")
         wrap.pack(fill="x", padx=theme.PAD_MD, pady=theme.PAD_MD)
-
-        self._mismatch = ctk.CTkFrame(
-            wrap, fg_color="#2C0A10", border_width=1,
-            border_color="#6A1828", corner_radius=theme.RADIUS_SM)
-        ctk.CTkLabel(self._mismatch, text="",
-                     image=icon("warn", 12, theme.ERR), width=14
-                     ).pack(side="left", padx=(10, 6), pady=8)
-        ctk.CTkLabel(self._mismatch,
-                     text="Passphrase and confirmation do not match.",
-                     font=theme.BODY,
-                     text_color="#FF8A95"
-                     ).pack(side="left", pady=8)
 
         self._prog = V2ProgressBar(wrap)
         self._prog.pack(fill="x", pady=(0, theme.PAD_SM))
@@ -421,6 +346,9 @@ class EncryptPanel(ctk.CTkFrame):
             self._cover_img = cover
             w, h = cover.size
             self._sample_xy = (w // 2, h // 2)
+            self._cover_preview.show_image(
+                cover, label=os.path.basename(path).upper(),
+                mode=info.get("mode", "RGB"))
         except Exception:
             pass
         self._log(f"Cover loaded · {os.path.basename(path)} · "
@@ -429,22 +357,6 @@ class EncryptPanel(ctk.CTkFrame):
         if ext in self._LOSSY_EXTS:
             self._log("JPEG cover · output stego will be saved as PNG "
                       "(JPEG would destroy the hidden bits).", "warn")
-        try:
-            encrypted = check_magic(path)
-        except Exception:
-            encrypted = None
-        self._push_preview(encrypted=encrypted)
-        try:
-            self._on_inspect({
-                "kind": "narrate",
-                "msg": (f"Loaded {os.path.basename(path)} · "
-                        f"{info['width']}×{info['height']} · "
-                        f"capacity {theme.fmt_bytes(info['capacity_bytes'])} · "
-                        f"encrypted={'yes' if encrypted else 'no'}"),
-                "tone": "info",
-            })
-        except Exception:
-            pass
         self._refresh()
 
     def _on_payload_file(self, path: str):
@@ -471,39 +383,6 @@ class EncryptPanel(ctk.CTkFrame):
             self._payload_dz.pack(fill="x")
             self._payload_kind = "file"
         self._refresh()
-
-    def _push_capacity_only(self):
-        if self._cover_info is None:
-            return
-        try:
-            self._on_inspect({
-                "kind": "update_capacity",
-                "payload_bytes": self._payload_size(),
-                "raw_bytes": self._payload_size(),
-                "encrypted_bytes": (estimate_encrypted_size(self._payload_size())
-                                    if self._payload_size() else 0),
-                "capacity_bytes": self._cover_info["capacity_bytes"],
-            })
-        except Exception:
-            pass
-
-    def _push_preview(self, *, encrypted: bool | None = None):
-        if self._cover_img is None:
-            return
-        label = os.path.basename(self._cover_path or "cover")
-        state = {
-            "mode": "encrypt",
-            "preview": True,
-            "cover_image": self._cover_img,
-            "payload_bytes": self._payload_size(),
-            "label": label,
-        }
-        if encrypted is not None:
-            state["encrypted"] = encrypted
-        try:
-            self._on_inspect(state)
-        except Exception:
-            pass
 
     def _payload_size(self) -> int:
         if self._payload_kind == "text":
@@ -561,12 +440,6 @@ class EncryptPanel(ctk.CTkFrame):
         else:
             self._fit_badge.set("—", "neutral")
 
-        if self._pw_var.get() and self._pw2_var.get() and \
-                self._pw_var.get() != self._pw2_var.get():
-            self._mismatch.pack(fill="x", pady=(0, theme.PAD_SM))
-        else:
-            self._mismatch.pack_forget()
-
         # Passphrase entropy bar
         pw = self._pw_var.get()
         bits = _estimate_bits(pw)
@@ -587,7 +460,6 @@ class EncryptPanel(ctk.CTkFrame):
         ok = bool(self._cover_path
                   and raw
                   and self._pw_var.get()
-                  and self._pw_var.get() == self._pw2_var.get()
                   and (not cap or enc <= cap))
         if self._running:
             self._run_btn.configure(state="disabled", text="Encrypting…")
@@ -598,16 +470,6 @@ class EncryptPanel(ctk.CTkFrame):
                       else "Begin encryption"))
         self._export_btn.configure(
             state="normal" if self._complete else "disabled")
-
-        # Keep Inspector capacity bars in sync with the payload size
-        # while the user types / picks files (legacy behavior) — but only
-        # push when the payload size actually changed, to avoid re-rendering
-        # the canvas thumbnail on every keystroke.
-        if self._cover_img is not None and not self._running:
-            cur = self._payload_size()
-            if cur != self._last_preview_size:
-                self._last_preview_size = cur
-                self._push_capacity_only()
 
     # ── run ───────────────────────────────────────────────────────────────
     def _run(self):
@@ -640,7 +502,6 @@ class EncryptPanel(ctk.CTkFrame):
         self._running = True
         self._complete = False
         self._stego_out = None
-        self._last_stage = 0  # 0=idle,1=kdf,2=cipher,3=mac,4=embed
         self._prog.reset()
         try:
             self._spinner.start()
@@ -649,53 +510,13 @@ class EncryptPanel(ctk.CTkFrame):
         self._refresh()
 
         self._log(f"▶ Begin encryption · {label}", "accent")
-        self._narrate("reset", "")
-        self._narrate(
-            f"Starting encryption · {label} · "
-            f"cover {os.path.basename(self._cover_path or '')}", "accent")
         run_in_thread(self, fn,
                       on_progress=self._on_progress,
                       on_done=self._on_done,
                       on_error=self._on_error)
 
-    def _narrate(self, msg: str, tone: str = "info"):
-        try:
-            if msg == "reset":
-                self._on_inspect({"kind": "reset_narration"})
-            else:
-                self._on_inspect({"kind": "narrate", "msg": msg, "tone": tone})
-        except Exception:
-            pass
-
     def _on_progress(self, p: float):
         self._prog.set(p)
-        # Derive narration stages from progress breakpoints so the user
-        # sees the crypto pipeline advance without threading events from core.
-        stage = self._last_stage
-        if p > 0 and stage < 1:
-            self._narrate(
-                "Deriving 128-bit key · PBKDF2-HMAC-SHA256 · "
-                "16 B salt · 480,000 iterations", "info")
-            self._last_stage = 1
-        if p >= 0.05 and stage < 2:
-            self._narrate(
-                "Encrypting payload · AES-128-CBC · 16 B IV (nonce)",
-                "info")
-            self._last_stage = 2
-        if p >= 0.15 and stage < 3:
-            self._narrate(
-                "Authenticating · HMAC-SHA256 · 32 B tag",
-                "info")
-            self._last_stage = 3
-        if p >= 0.20 and stage < 4:
-            cap = (self._cover_info or {}).get("capacity_bytes", 0)
-            raw = estimate_encrypted_size(self._payload_size()) \
-                if self._payload_size() else 0
-            pct = (raw / cap * 100) if cap else 0
-            self._narrate(
-                f"Embedding {theme.fmt_bytes(raw)} into R/G/B LSBs · "
-                f"{pct:.1f}% of capacity", "info")
-            self._last_stage = 4
 
     def _on_done(self, stego_img):
         self._running = False
@@ -706,85 +527,12 @@ class EncryptPanel(ctk.CTkFrame):
         except Exception:
             pass
         self._pending_image = stego_img
-        self._narrate("Done · stego ready", "ok")
         self._log("✓ Embedded payload across R/G/B · stego ready", "ok")
         try:
             show_toast(self.winfo_toplevel(), "Stego ready", kind="ok")
         except Exception:
             pass
-        # Push state to Inspector tab.
-        self._push_inspector(stego_img)
         self._refresh()
-        # χ² detectability — runs on a worker so the UI stays responsive.
-        self._run_detectability(stego_img)
-
-    def _run_detectability(self, stego_img):
-        cover_img = self._cover_img
-        if cover_img is None:
-            return
-
-        def work(progress_callback=None):
-            return (chi_square_score(cover_img),
-                    chi_square_score(stego_img))
-
-        run_in_thread(self, work,
-                      on_done=self._on_detectability,
-                      on_error=lambda exc: self._log(
-                          f"χ² scoring skipped · {exc}", "warn"))
-
-    def _on_detectability(self, scores):
-        cover_res, stego_res = scores
-        c_score = cover_res["score"]
-        s_score = stego_res["score"]
-        verdict = stego_res["verdict"]
-
-        # Bar fill: score / 10, teal track. Width capped at 80px (track width).
-        ratio = max(0.0, min(1.0, s_score / 10.0))
-        target_w = max(1, int(80 * ratio))
-        self._det_fill.configure(
-            fg_color=theme.OK if verdict == "PASS" else theme.WARN,
-            width=target_w)
-        if not self._det_fill.winfo_ismapped():
-            self._det_fill.place(x=0, y=0)
-
-        self._det_score.configure(text=f"  {s_score:4.1f} / 10")
-        if verdict == "PASS":
-            self._det_pill.set("✓ PASS", "ok")
-        else:
-            self._det_pill.set("⚠ SUSPICIOUS", "warn")
-
-        delta = s_score - c_score
-        sign = "+" if delta >= 0 else ""
-        self._det_compare.configure(
-            text=(f"COVER  : {c_score:4.1f} / 10\n"
-                  f"STEGO  : {s_score:4.1f} / 10  (Δ {sign}{delta:.1f})"))
-
-        # Show the section (idempotent).
-        if not self._det_section.winfo_ismapped():
-            self._det_section.pack(fill="x", pady=(theme.PAD_SM, 0))
-
-        self._log(
-            f"χ² detectability · cover {c_score:.1f} · stego {s_score:.1f} "
-            f"({verdict})",
-            "ok" if verdict == "PASS" else "warn")
-
-    def _push_inspector(self, stego_img):
-        if self._cover_img is None:
-            return
-        label = (f"{os.path.basename(self._cover_path or 'cover')} → "
-                 f"stego · {theme.fmt_bytes(self._payload_size())}")
-        state = {
-            "mode": "encrypt",
-            "cover_image": self._cover_img,
-            "stego_image": stego_img,
-            "payload_bytes": self._payload_size(),
-            "label": label,
-            "timestamp": _dt.datetime.now().strftime("%H:%M:%S"),
-        }
-        try:
-            self._on_inspect(state)
-        except Exception:
-            pass
 
     def _on_error(self, exc: BaseException):
         self._running = False
@@ -794,7 +542,6 @@ class EncryptPanel(ctk.CTkFrame):
             self._spinner.stop()
         except Exception:
             pass
-        self._narrate(f"Encryption failed · {exc}", "crit")
         self._log(f"✗ Encryption failed · {exc}", "crit")
         themed_message(self, "Encryption failed", str(exc), "error")
         self._refresh()
@@ -830,7 +577,4 @@ class EncryptPanel(ctk.CTkFrame):
         self._stego_out = None
         self._pending_image = None
         self._prog.reset()
-        if self._det_section.winfo_ismapped():
-            self._det_section.pack_forget()
-        self._push_preview()
         self._refresh()

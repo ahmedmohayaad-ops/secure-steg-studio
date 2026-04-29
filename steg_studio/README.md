@@ -43,7 +43,6 @@ steg_studio/                  ← top-level package
 │   ├── app.py                ← shell: title/top/rail/workspace/drawer
 │   ├── encrypt_panel.py      ← embed workflow
 │   ├── decrypt_panel.py      ← extract workflow
-│   ├── inspector_panel.py    ← live forensic dashboard
 │   ├── components.py         ← widgets (BytePeek, ActivityLog, CoverPreview…)
 │   ├── theme.py              ← dual dark / light palette + type scale
 │   ├── assets.py             ← inline SVG icon pack
